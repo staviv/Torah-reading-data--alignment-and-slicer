@@ -1,2 +1,2 @@
 # Torah-reading-data--alignment-and-slicer
-This repository contains a tool for automatically slicing audio and text data of Torah readings. It utilizes the Whisper transcription model for initial processing, then aligns the output with the original text, including cantillation marks (te'amim).
+This repository contains a tool for automatically slicing audio and text data of Torah readings. It utilizes the Whisper transcription model for initial processing, then aligns the output with the original text, including cantillation marks (te'amim). The tool segments long Torah reading recordings and their corresponding texts into smaller, aligned chunks, enabling training with models that require shorter data, such as Whisper's 30-second limitation.
