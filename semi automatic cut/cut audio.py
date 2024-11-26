@@ -13,7 +13,9 @@ from PyQt6.QtCore import QUrl, Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from vad import EnergyVAD
 import re
-import pytube  # Add pytube for YouTube downloads
+import yt_dlp
+from yt_dlp.utils import sanitize_filename
+
 
 parsha_names = ["Bereshit", "Noach", "LechLecha", "Vayera", "ChayeiSara", "Toldot", "Vayetzei", "Vayishlach", "Vayeshev", "Miketz", "Vayigash", "Vayechi", "Shemot", "Vaera", "Bo", "Beshalach", "Yitro", "Mishpatim", "Terumah", "Tetzaveh", "KiTisa", "Vayakhel", "Pekudei", "Vayikra", "Tzav", "Shmini", "Tazria", "Metzora", "Acharei Mot", "Kedoshim", "Emor", "Behar", "Bechukotai", "Bamidbar", "Nasso", "Behaalotcha", "Shlach", "Korach", "Chukat", "Balak", "Pinchas", "Matot", "Masei", "Devarim", "Vaethanan", "Eikev", "Reeh", "Shoftim", "KiTeitzei", "KiTavo", "Nitzavim", "Vayeilech", "Haazinu", "VezotHaberakhah"]
 
@@ -95,6 +97,7 @@ class AudioSegmentationApp(QMainWindow):
         self.is_playing = False
         self.segment_duration = 0
         self.sr = 16000  # Default sample rate
+        self.playback_speed = 2.0  # Default playback speed (2x)
 
         self.init_ui()
 
@@ -112,21 +115,21 @@ class AudioSegmentationApp(QMainWindow):
         parsha_layout.addWidget(parsha_label)
         parsha_layout.addWidget(self.parsha_combo)
 
-        # Reading selection
-        reading_layout = QHBoxLayout()
-        reading_label = QLabel("Reading:")
-        self.reading_combo = QComboBox()
-        self.reading_combo.addItems([str(i) for i in range(1, 8)])
-        self.reading_combo.addItem("All")
-        reading_layout.addWidget(reading_label)
-        reading_layout.addWidget(self.reading_combo)
+        # aliyah selection
+        aliyah_layout = QHBoxLayout()
+        aliyah_label = QLabel("aliyah:")
+        self.aliyah_combo = QComboBox()
+        self.aliyah_combo.addItems([str(i) for i in range(1, 8)])
+        self.aliyah_combo.addItem("All")
+        aliyah_layout.addWidget(aliyah_label)
+        aliyah_layout.addWidget(self.aliyah_combo)
 
         # Load Parsha text button
         self.load_parsha_button = QPushButton("Load Parsha Text")
         self.load_parsha_button.clicked.connect(self.load_selected_parsha_text)
 
         layout.addLayout(parsha_layout)
-        layout.addLayout(reading_layout)
+        layout.addLayout(aliyah_layout)
         layout.addWidget(self.load_parsha_button)
 
         # YouTube link input
@@ -173,6 +176,15 @@ class AudioSegmentationApp(QMainWindow):
         self.play_pause_button = QPushButton("Play")
         self.play_pause_button.clicked.connect(self.toggle_playback)
         playback_layout.addWidget(self.play_pause_button)
+
+        # Playback speed control
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItems(["1x", "1.5x", "2x", "2.5x", "3x"])
+        self.speed_combo.setCurrentIndex(2)  # Set default to 2x
+        self.speed_combo.currentIndexChanged.connect(self.change_playback_speed)
+        playback_layout.addWidget(QLabel("Speed:"))
+        playback_layout.addWidget(self.speed_combo)
+
         layout.addLayout(playback_layout)
 
         # Other buttons
@@ -231,6 +243,25 @@ class AudioSegmentationApp(QMainWindow):
  
 
 
+    # def download_youtube_audio(self):
+    #     youtube_link = self.youtube_input.text()
+    #     if not youtube_link:
+    #         self.show_error("Error", "Please enter a YouTube link.")
+    #         return
+
+    #     try:
+    #         yt = pytube.YouTube(youtube_link)
+    #         audio_stream = yt.streams.filter(only_audio=True).first()
+
+    #         # Filter out invalid characters from the title
+    #         safe_title = re.sub(r'[\\/*?:"<>|]', "", yt.title) 
+    #         self.audio_file = audio_stream.download(filename=f"{safe_title}.mp3")
+    #         self.output_dir = os.path.dirname(self.audio_file)
+    #         self.load_selected_parsha_text()
+    #         self.segment_audio()
+    #     except Exception as e:
+    #         self.show_error("Error", f"Failed to download YouTube audio: {e}")
+
     def download_youtube_audio(self):
         youtube_link = self.youtube_input.text()
         if not youtube_link:
@@ -238,21 +269,43 @@ class AudioSegmentationApp(QMainWindow):
             return
 
         try:
-            yt = pytube.YouTube(youtube_link)
-            audio_stream = yt.streams.filter(only_audio=True).first()
+            safe_title = "downloaded_audio" # שם קובץ ברירת מחדל
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': '%(title)s.%(ext)s',
+                'noplaylist': True,
+                'paths': {'home': self.output_dir}, # שמור את הקובץ בתיקיית הפלט
+                'progress_hooks': [self.yt_dlp_progress_hook], # הוספת progress hook
+            }
 
-            # Filter out invalid characters from the title
-            safe_title = re.sub(r'[\\/*?:"<>|]', "", yt.title) 
-            self.audio_file = audio_stream.download(filename=f"{safe_title}.mp3")
-            self.output_dir = os.path.dirname(self.audio_file)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(youtube_link, download=True)
+                safe_title = sanitize_filename(info_dict.get('title', "downloaded_audio"))
+
+            file_ext = info_dict.get('ext', 'webm')
+            self.audio_file = os.path.join(self.output_dir, f"{safe_title}.{file_ext}")
+            self.output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+            if not self.output_dir:
+                return
             self.load_selected_parsha_text()
             self.segment_audio()
+
         except Exception as e:
+            print(f"Error downloading YouTube audio: {e}")
             self.show_error("Error", f"Failed to download YouTube audio: {e}")
 
+    def yt_dlp_progress_hook(self, d):
+        if d['status'] == 'downloading':
+            percent_str = re.sub(r'\x1b\[[0-9;]*[mG]', '', d['_percent_str']).strip()
+            percent_str = percent_str.replace('%', '')
+            try:
+                percentage = int(float(percent_str))
+                self.progress_bar.setValue(percentage)
+            except ValueError as e:
+                print(f"Error converting percentage string: {e}, Original string: {d['_percent_str']}")
 
     def load_audio(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Open Audio File", "", "Audio Files (*.wav *.mp3)")
+        file_name, _ = QFileDialog.getOpenFileName(self, "Open Audio File", "", "Audio Files (*.wav *.mp3 *.m4a)")
         if file_name:
             try:
                 self.audio_file = file_name
@@ -261,27 +314,27 @@ class AudioSegmentationApp(QMainWindow):
                     return
 
                 parsha_name = self.parsha_combo.currentText()
-                reading = self.reading_combo.currentText()
-                self.load_parsha_text(parsha_name, reading)  # Load Parsha text after loading audio
+                aliyah = self.aliyah_combo.currentText()
+                # self.load_parsha_text(parsha_name, aliyah)  # Load Parsha text after loading audio
                 self.segment_audio()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load audio file: {str(e)}")
 
     def load_selected_parsha_text(self):
         parsha_name = self.parsha_combo.currentText()
-        reading = self.reading_combo.currentText()
-        self.load_parsha_text(parsha_name, reading)
+        aliyah = self.aliyah_combo.currentText()
+        self.load_parsha_text(parsha_name, aliyah)
 
-    def load_parsha_text(self, parsha_name, reading):
-        if reading == "All":
+    def load_parsha_text(self, parsha_name, aliyah):
+        if aliyah == "All":
             text = ""
             for i in range(1, 8):
                 file_path = os.path.join("text", f"{parsha_name}-{i}.txt")
                 if os.path.exists(file_path):
                     with open(file_path, "r", encoding="utf-8") as f:
-                        text += f.read() + " "  # Add a space after each reading
+                        text += f.read() + " "  # Add a space after each aliyah
         else:
-            file_path = os.path.join("text", f"{parsha_name}-{reading}.txt")
+            file_path = os.path.join("text", f"{parsha_name}-{aliyah}.txt")
             with open(file_path, "r", encoding="utf-8") as f:
                 text = f.read()
         
@@ -386,11 +439,14 @@ class AudioSegmentationApp(QMainWindow):
     def toggle_playback(self):
         if self.is_playing:
             self.media_player.pause()
-            self.is_playing = False
         else:
             self.media_player.play()
-            self.is_playing = True
+        self.is_playing = not self.is_playing
         self.update_play_pause_button()
+
+    def change_playback_speed(self):
+        self.playback_speed = float(self.speed_combo.currentText()[:-1])  # Remove the "x" from the end
+        self.media_player.setPlaybackRate(self.playback_speed)
 
     def save_project(self):
         if not self.audio_file:
@@ -480,4 +536,3 @@ if __name__ == "__main__":
     window = AudioSegmentationApp()
     window.show()
     sys.exit(app.exec())
-
