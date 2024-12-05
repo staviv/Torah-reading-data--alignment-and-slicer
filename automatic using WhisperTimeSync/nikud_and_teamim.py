@@ -24,6 +24,9 @@ def just_teamim(text, base_char = BASE_CHAR):
     return new_text
 
 def remove_makav(text):
+    """
+    Replace makav with space
+    """
     makav_list = ["-","־"]
     for makav in makav_list:
         text = text.replace(makav, " ")
