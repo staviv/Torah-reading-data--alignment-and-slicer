@@ -5,18 +5,23 @@ import os
 import sys
 
 def get_api_key():
-    # Try environment variable first
-    api_key = "AIzaSyA9eKU-M8RGCf7yZEcaBL5XZZWejhDl9tQ"
-    
-    if not api_key:
+    # Load API key from a file
+    try:
+        with open("gemini_token", "r") as f:
+            api_key = f.read().strip()
+    except FileNotFoundError:
+        api_key = ""
+        
+    if api_key == "":
         # Prompt user for API key if not found in environment
         api_key = input("Please enter your Google API key: ").strip()
         if not api_key:
             print("Error: No API key provided. Please set GOOGLE_API_KEY environment variable or enter key when prompted.")
             sys.exit(1)
         
-        # Optionally save to environment for current session
-        os.environ["GOOGLE_API_KEY"] = api_key
+        # Save the token to a file for future use
+        with open("gemini_token", "w") as f:
+            f.write(api_key)
     
     return api_key
 
@@ -67,8 +72,8 @@ def setup_llm(api_key):
         If the content seems unrelated to Torah reading, set confidence to 0.
 
         Example outputs:
-        {"parasha": "Bereshit", "aliyah": 1, "dataset_name": "NusachAshkenaz-david-goldberg", "confidence": 0.95}
-        {"parasha": "Vayera", "aliyah": 3, "dataset_name": "NusachSefard-isaac-levy", "confidence": 0.85}
+        {"parasha": "Bereshit", "aliyah": 1, "dataset_name": "Nusach-Ashkenaz-david-goldberg", "confidence": 0.95}
+        {"parasha": "Vayera", "aliyah": 3, "dataset_name": "Nusach-Yerushalmi-eliyahu-abuhatzeira", "confidence": 0.85}
         """
         
         return genai.GenerativeModel(
