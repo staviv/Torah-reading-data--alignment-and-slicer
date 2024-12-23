@@ -3,8 +3,9 @@ import google.generativeai as genai
 import json
 import os
 import sys
+from typing import Dict, Set, Optional
 from get_all_aliyot_from_sefaria import parsha_names # parsha_names is a list of all the parshiot in the Torah
-
+from generate_parasha_variants import load_variants, is_valid_variant
 
 
 def get_api_key():
@@ -50,8 +51,23 @@ def get_video_metadata(link):
             print(f"Warning: Could not extract video metadata: {str(e)}")
             return {}
 
+def clean_video_url(url):
+    """Remove playlist parameters from video URLs."""
+    if 'youtube.com/watch?' in url:
+        # Extract video ID
+        video_id = None
+        for param in url.split('?')[1].split('&'):
+            if param.startswith('v='):
+                video_id = param.split('=')[1]
+                break
+        
+        if video_id:
+            return f'https://www.youtube.com/watch?v={video_id}'
+    
+    return url
+
 def is_playlist(url):
-    return 'playlist' in url or '?list=' in url
+    return 'playlist?list=' in url  # Modified to only match proper playlist URLs
 
 def get_playlist_videos(playlist_url):
     ydl_opts = {
@@ -88,24 +104,18 @@ def setup_llm(api_key):
             "top_p": 0.95,
             "top_k": 40,
             "max_output_tokens": 2048,
+            "response_mime_type": "application/json",
         }
         
         system_instruction = """
         You are a Torah reading assistant. When given a YouTube video's metadata, analyze it and return a JSON object.
         
         IMPORTANT RULES FOR is_parasha FIELD:
-        Set is_parasha to TRUE if and only if ALL these conditions are met:
-        1. The video contains an actual Torah reading (Kriat HaTorah)
-        2. The reading is specifically from one of the weekly Torah portions (Parshiot Hashavua)
-        3. You can clearly identify which specific parasha is being read
+        Set is_parasha to TRUE if you can understand which parasha is being read in the video.
         
-        Set is_parasha to FALSE in any of these cases:
-        - If it's not a Torah reading at all
-        - If it's a Torah reading but not from weekly portions (e.g., holidays, Rosh Chodesh)
-        - If you can't clearly identify which specific parasha is being read
-        - If you're unsure or the content is ambiguous
-        - If it's a lesson about the parasha but not the actual reading
-        - If it's just someone discussing or teaching the parasha
+        in parasha FIELD you must return exactly one of
+        the valid parasha names from this list:
+        {parsha_names}
         
         The response must include the following fields:
         
@@ -183,7 +193,7 @@ def get_input_with_suggestion(prompt, suggestion, validator=None):
             user_input = input(f"Invalid input. {prompt}: ")
     return user_input
 
-def download_audio(link, output_path):
+def download_audio(link, output_path, start_time=None, end_time=None):
     # Check if file already exists
     if os.path.exists(output_path):
         print(f"\nWarning: File already exists at {output_path}")
@@ -200,10 +210,19 @@ def download_audio(link, output_path):
         'outtmpl': f'{output_path}',
     }
 
+    # Add download range if times are specified
+    if start_time or end_time:
+        download_range = ''
+        if start_time:
+            download_range += start_time
+        download_range += '-'
+        if end_time:
+            download_range += end_time
+        ydl_opts['download_ranges'] = lambda info: [[download_range]]
+        
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([link])
     return True
-
 
 def print_parshiot():
     # Show aliyah range for the selected parsha and get confirmation
@@ -213,44 +232,35 @@ def print_parshiot():
         if i % 4 == 0:  # Print 4 parshiot per line
             print()
 
+def find_matching_parasha(name: str, variants_dict: Dict[str, Set[str]]) -> Optional[str]:
+    """Find matching parasha using pre-generated variants."""
+    if not name or not isinstance(name, str):
+        return None
+        
+    name = name.lower()
+    if not is_valid_variant(name):
+        return None
+        
+    for parasha, variants in variants_dict.items():
+        if name in variants:
+            return parasha
+    return None
+
 def match_parasha_name(model, suggested_name):
-    if not suggested_name or suggested_name in parsha_names:
+    # Load pre-generated variants
+    variants_dict = load_variants()
+    
+    if (not suggested_name) or (suggested_name in parsha_names):
         return suggested_name
         
-    prompt = f"""
-    Given this parasha name: "{suggested_name}"
-    Match it to one of the valid parasha names from this list:
-    {parsha_names}
+    # Try to match using variants
+    matched_name = find_matching_parasha(suggested_name, variants_dict)
+    if matched_name:
+        print(f"\nMatched '{suggested_name}' to '{matched_name}' using variant matching")
+        return matched_name
     
-    Return a JSON response in this format:
-    {{
-        "matched_parasha": "name from the list or null if no match found",
-        "confidence": float between 0-1,
-        "reasoning": "brief explanation of the match or why no match was found"
-    }}
-    """
-    
-    try:
-        response = model.generate_content(prompt)
-        result = clean_llm_json_response(response.text)
-        if not result:
-            return None
-        
-        matched_name = result.get("matched_parasha")
-        confidence = result.get("confidence", 0)
-        reasoning = result.get("reasoning", "")
-        
-        if matched_name in parsha_names and confidence > 0.7:
-            print(f"\nMatched '{suggested_name}' to '{matched_name}'")
-            print(f"Reasoning: {reasoning}")
-            print(f"Confidence: {confidence}")
-            return matched_name
-            
-        return None
-        
-    except Exception as e:
-        print(f"Error matching parasha name: {e}")
-        return None
+    print(f"\nWarning: Could not match '{suggested_name}' to any known variants")
+    return None
 
 def process_single_video(model, link, dataset_name=None):
     suggestion = get_llm_suggestion(model, link)
@@ -265,13 +275,16 @@ def process_single_video(model, link, dataset_name=None):
 
     suggested_parasha = suggestion.get("parasha")
     if suggested_parasha not in parsha_names:
+        print(f"\nSuggested parasha name: {suggested_parasha}")
+        print("\nThis parasha name is not in the valid list")
         print("\nTrying to match suggested parasha name to valid list...")
         matched_parasha = match_parasha_name(model, suggested_parasha)
         if matched_parasha:
             suggestion["parasha"] = matched_parasha
         else:
             print("\nWarning: Could not match parasha name to valid list")
-            if not input("Do you want to continue anyway? (y/n): ").lower().startswith('y'):
+            print(matched_parasha)
+            if not input("Do you want to continue processing this current video (otherwise it will be skipped)? (y/n): ").lower().startswith('y'):
                 return False, dataset_name
 
     print_parshiot()
@@ -304,12 +317,31 @@ def process_single_video(model, link, dataset_name=None):
     dataset_dir = f"/home/prj8045/data/{dataset_name}"
     audio_path = f"{dataset_dir}/{parsha}-{aliyah}.mp3"
     
+    # Add time selection before download
+    start_time = input("\nEnter start time (optional, format MM:SS or HH:MM:SS, press Enter to skip): ").strip()
+    end_time = input("Enter end time (optional, format MM:SS or HH:MM:SS, press Enter to skip): ").strip()
+    
     print(f"\nDownloading to {audio_path}...")
-    if not download_audio(link, audio_path):
+    if not download_audio(link, audio_path, start_time, end_time):
         return False, dataset_name
     print("Download complete")
     
     return True, dataset_name
+
+def has_playlist_param(url):
+    """Check if URL contains playlist parameter."""
+    return 'list=' in url
+
+def extract_playlist_id(url):
+    """Extract playlist ID from URL."""
+    for param in url.split('?')[1].split('&'):
+        if param.startswith('list='):
+            return param.split('=')[1]
+    return None
+
+def get_playlist_url(playlist_id):
+    """Convert playlist ID to playlist URL."""
+    return f'https://www.youtube.com/playlist?list={playlist_id}'
 
 def main():
     api_key = get_api_key()
@@ -322,7 +354,28 @@ def main():
         link = input("\nEnter the YouTube video/playlist link (or 'q' to quit): ")
         if link.lower() == 'q':
             break
+
+        # Check if URL contains both video and playlist
+        if 'youtube.com/watch?' in link and has_playlist_param(link):
+            playlist_id = extract_playlist_id(link)
+            choice = input("\nThis URL contains both video and playlist. Do you want to:\n"
+                         "1. Process just this video\n"
+                         "2. Process the entire playlist\n"
+                         "Choose (1/2): ").strip()
             
+            if choice == '2':
+                link = get_playlist_url(playlist_id)
+                print(f"\nSwitching to playlist mode: {link}")
+            else:
+                link = clean_video_url(link)
+                print(f"\nProcessing single video: {link}")
+        else:
+            # Clean the URL if it's a video
+            cleaned_link = clean_video_url(link)
+            if cleaned_link != link:
+                print(f"Cleaned URL: {cleaned_link}")
+                link = cleaned_link
+
         if is_playlist(link):
             videos = get_playlist_videos(link)
             print(f"\nFound {len(videos)} videos in playlist")
