@@ -105,7 +105,7 @@ def setup_llm(api_key):
         
         in parasha FIELD you must return exactly one of
         the valid parasha names from this list:
-        {{parsha_names}}
+        {parsha_names}
         
         The response must include the following fields:
         
