@@ -5,29 +5,19 @@ import os
 import sys
 from typing import Dict, Set, Optional
 from get_all_aliyot_from_sefaria import parsha_names # parsha_names is a list of all the parshiot in the Torah
-from generate_parasha_variants import load_variants, clean_variant
+from generate_parasha_variants import clean_variant
+from parasha_matcher import ParashaMatcher
 
 
 def get_api_key():
-    # Load API key from a file
     try:
-        with open("gemini_token", "r") as f:
-            api_key = f.read().strip()
-    except FileNotFoundError:
-        api_key = ""
-        
-    if api_key == "":
-        # Prompt user for API key if not found in environment
-        api_key = input("Please enter your Google API key: ").strip()
+        return os.environ["GEMINI_API_KEY"]
+    except KeyError:
+        api_key = input("Please enter your Gemini API key: ").strip()
         if not api_key:
-            print("Error: No API key provided. Please set GOOGLE_API_KEY environment variable or enter key when prompted.")
+            print("Error: No API key provided")
             sys.exit(1)
-        
-        # Save the token to a file for future use
-        with open("gemini_token", "w") as f:
-            f.write(api_key)
-    
-    return api_key
+        return api_key
 
 def get_video_metadata(link):
     ydl_opts = {
@@ -236,12 +226,13 @@ def find_matching_parasha(name: str, variants_dict: Dict[str, Set[str]]) -> Opti
     """Find matching parasha using pre-generated variants."""
     if not name or not isinstance(name, str):  # Check if name is a string and not empty
         return None
+    
+    print(f"\nTrying to match '{name}' to known parasha variants...")
         
     name = clean_variant(name)
     if not name:  # If name is empty after cleaning
         return None
     
-    print(f"\nTrying to match '{name}' to known parasha variants...")
     for parasha, variants in variants_dict.items():
         print(f"Checking {parasha}...")
         if name in variants:
@@ -249,16 +240,17 @@ def find_matching_parasha(name: str, variants_dict: Dict[str, Set[str]]) -> Opti
     return None
 
 def match_parasha_name(model, suggested_name):
-    # Load pre-generated variants
-    variants_dict = load_variants("automatic using WhisperTimeSync/parasha_variants.json")
+    # Path of current file
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    matcher = ParashaMatcher(f"{current_dir}/parasha_variants.json")
     
     if (not suggested_name) or (suggested_name in parsha_names):
         return suggested_name
-        
-    # Try to match using variants
-    matched_name = find_matching_parasha(suggested_name, variants_dict)
+    
+    matched_name, confidence, is_exact = matcher.match_parasha_name(suggested_name)
     if matched_name:
-        print(f"\nMatched '{suggested_name}' to '{matched_name}' using variant matching")
+        match_type = "exact" if is_exact else f"fuzzy (confidence: {confidence:.2f})"
+        print(f"\nMatched '{suggested_name}' to '{matched_name}' using {match_type} matching")
         return matched_name
     
     print(f"\nWarning: Could not match '{suggested_name}' to any known variants")
