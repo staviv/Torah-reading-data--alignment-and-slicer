@@ -8,6 +8,7 @@ from get_all_aliyot_from_sefaria import parsha_names # parsha_names is a list of
 from generate_parasha_variants import clean_variant
 from parasha_matcher import ParashaMatcher
 
+GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
 
 def get_api_key():
     try:
@@ -101,7 +102,7 @@ def setup_llm(api_key):
         You are a Torah reading assistant. When given a YouTube video's metadata, analyze it and return a JSON object.
         
         IMPORTANT RULES FOR is_parasha FIELD:
-        Set is_parasha to TRUE if you can understand which parasha is being read in the video.
+        Set is_parasha to TRUE if you can understand which parasha is being read in the video and it is NOT something else like a Torah lesson, haftarah, megillah, maftir, etc.
         
         in parasha FIELD you must return exactly one of
         the valid parasha names from this list:
@@ -118,14 +119,14 @@ def setup_llm(api_key):
         }}
 
         Example outputs:
-        {{"is_parasha": true, "parasha": "Bereshit", "aliyah": "1", "dataset_name": "Nusach-Ashkenaz-david-goldberg", "confidence": 0.95}}
-        {{"is_parasha": false, "parasha": null, "aliyah": null, "dataset_name": null, "confidence": 0.9}} <- Not a Torah reading
+        {{"is_parasha": true, "parasha": "Bereshit", "aliyah": "1", "dataset_name": "Nusach-Ashkenaz-david-Goldberg", "confidence": 0.95}}
+        {{"is_parasha": false, "parasha": null, "aliyah": null, "dataset_name": Nusach-Yerushalmi-Avi-Levi, "confidence": 0.9}} <- Not a Torah reading
         {{"is_parasha": false, "parasha": null, "aliyah": null, "dataset_name": null, "confidence": 0.8}} <- Torah lesson but not reading
         {{"is_parasha": false, "parasha": "Bereshit", "aliyah": null, "dataset_name": null, "confidence": 0.7}} <- Mentions parasha but not reading
         """
         
         return genai.GenerativeModel(
-            model_name="gemini-1.5-flash-8b",
+            model_name=GEMINI_MODEL_NAME,
             generation_config=generation_config,
             system_instruction=system_instruction
         )
@@ -152,7 +153,7 @@ def clean_llm_json_response(response_text):
         print(f"Raw text: {cleaned_text}")
         return None
 
-def get_llm_suggestion(model, link):
+def get_llm_suggestion(model, link, quiet=False):
     metadata = get_video_metadata(link)
     prompt = f"""
     Analyze this YouTube video metadata to suggest parameters:
@@ -165,11 +166,12 @@ def get_llm_suggestion(model, link):
     if not result:
         return {}
     
-    # Print metadata and confidence for user reference
-    print("\nVideo metadata:")
-    print(f"Title: {metadata.get('title', 'N/A')}")
-    print(f"Channel: {metadata.get('channel', 'N/A')}")
-    print(f"Confidence: {result.get('confidence', 'N/A')}")
+    # Print metadata and confidence only if not in quiet mode
+    if not quiet:
+        print("\nVideo metadata:")
+        print(f"Title: {metadata.get('title', 'N/A')}")
+        print(f"Channel: {metadata.get('channel', 'N/A')}")
+        print(f"Confidence: {result.get('confidence', 'N/A')}")
     
     return result
 
@@ -183,12 +185,19 @@ def get_input_with_suggestion(prompt, suggestion, validator=None):
             user_input = input(f"Invalid input. {prompt}: ")
     return user_input
 
-def download_audio(link, output_path, start_time=None, end_time=None):
+def download_audio(link, output_path, start_time=None, end_time=None, quiet=False):
+    # Remove .mp3 extension as it will be added by yt-dlp
+    if output_path.endswith('.mp3'):
+        output_path = output_path[:-4]
+
     # Check if file already exists
-    if os.path.exists(output_path):
-        print(f"\nWarning: File already exists at {output_path}")
-        if not input("Do you want to overwrite it? (y/n): ").lower().startswith('y'):
-            print("Skipping download...")
+    if os.path.exists(output_path + '.mp3'):
+        if not quiet:
+            print(f"\nWarning: File already exists at {output_path}.mp3")
+            if not input("Do you want to overwrite it? (y/n): ").lower().startswith('y'):
+                print("Skipping download...")
+                return False
+        else:
             return False
 
     ydl_opts = {
@@ -197,8 +206,16 @@ def download_audio(link, output_path, start_time=None, end_time=None):
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
         }],
-        'outtmpl': f'{output_path}',
+        'outtmpl': output_path,  # Extension will be added automatically
     }
+
+    # Add quiet options when in quiet mode
+    if quiet:
+        ydl_opts.update({
+            'quiet': True,
+            'no_warnings': True,
+            'no_color': True
+        })
 
     # Add download range if times are specified
     if start_time or end_time:
@@ -301,12 +318,27 @@ def process_single_video(model, link, dataset_name=None):
         lambda x: x == "all" or (x.isdigit() and 1 <= int(x) <= 7))
 
     if dataset_name is None:
+        suggested_dataset = suggestion.get("dataset_name")
         last_dataset_name = get_last_dataset_name()
+        
         if last_dataset_name:
-            use_last = input(f"Use last dataset name '{last_dataset_name}'? (y/n): ").lower() == 'y'
-            dataset_name = last_dataset_name if use_last else input("Enter the name of the dataset: ")
-        else:
+            print(f"\nLast used dataset name: {last_dataset_name}")
+            use_last = input("Use this name? (y/n): ").lower().startswith('y')
+            if use_last:
+                dataset_name = last_dataset_name
+        
+        if not dataset_name and suggested_dataset:
+            print(f"\nSuggested dataset name: {suggested_dataset}")
+            user_input = input(f"Press Enter to use this name, or type a different name: ").strip()
+            dataset_name = suggested_dataset if not user_input else user_input
+        
+        if not dataset_name:
             dataset_name = input("Enter the name of the dataset: ")
+    else:
+        # Show current dataset name and ask if user wants to change it
+        print(f"\nCurrent dataset name: {dataset_name}")
+        if not input("Continue with this dataset name? (y/n): ").lower().startswith('y'):
+            dataset_name = input("Enter new dataset name: ")
 
     dataset_dir = f"/home/prj8045/data/{dataset_name}"
     audio_path = f"{dataset_dir}/{parsha}-{aliyah}.mp3"
@@ -337,63 +369,300 @@ def get_playlist_url(playlist_id):
     """Convert playlist ID to playlist URL."""
     return f'https://www.youtube.com/playlist?list={playlist_id}'
 
+def read_video_links_from_file(file_path):
+    """Read video and playlist links from a text file."""
+    links = []
+    try:
+        with open(file_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    # Process the URL in case it's a playlist
+                    processed_url = process_playlist_url(line)
+                    if is_playlist(processed_url):
+                        # If it's a playlist, get all video URLs
+                        playlist_videos = get_playlist_videos(processed_url)
+                        links.extend(playlist_videos)
+                    else:
+                        # If it's a single video, add it directly
+                        links.append(line)
+    except Exception as e:
+        print(f"Error reading video links file: {str(e)}")
+    return links
+
+def save_unmatched_link(link, dataset_name, reason=""):
+    """Save unmatched video link to a file with reason for failure."""
+    os.makedirs('unmatched_videos', exist_ok=True)
+    filename = f'unmatched_videos/unmatched_{dataset_name}.txt'
+    
+    # Check if link already exists in file to avoid duplicates
+    existing_links = set()
+    if os.path.exists(filename):
+        with open(filename, 'r', encoding='utf-8') as f:
+            for line in f:
+                if '#' in line:
+                    existing_link = line.split('#')[0].strip()
+                    existing_links.add(existing_link)
+    
+    # Only append if link isn't already in the file
+    if link not in existing_links:
+        with open(filename, 'a', encoding='utf-8') as f:
+            f.write(f"{link} # {reason}\n")
+
+def process_single_video_automatic(model, link, dataset_name):
+    """Process a single video automatically without user interaction."""
+    suggestion = get_llm_suggestion(model, link, quiet=True)
+    
+    if not suggestion.get("is_parasha", False):
+        save_unmatched_link(link, dataset_name, "Not detected as Torah reading")
+        return False, dataset_name
+
+    suggested_parasha = suggestion.get("parasha")
+    if suggested_parasha not in parsha_names:
+        matched_parasha = match_parasha_name(model, suggested_parasha)
+        if matched_parasha:
+            suggestion["parasha"] = matched_parasha
+        else:
+            save_unmatched_link(link, dataset_name, f"Could not match parasha name: {suggested_parasha}")
+            return False, dataset_name
+
+    parsha = suggestion["parasha"]
+    aliyah = suggestion.get("aliyah", "all")
+    
+    dataset_dir = f"/home/prj8045/data/{dataset_name}"
+    audio_path = f"{dataset_dir}/{parsha}-{aliyah}.mp3"
+    
+    if not download_audio(link, audio_path, quiet=True):
+        save_unmatched_link(link, dataset_name, "Download failed or file already exists")
+        return False, dataset_name
+    
+    return True, dataset_name
+
+def process_videos_automatic(model, videos, dataset_name):
+    """Process multiple videos automatically."""
+    successes = 0
+    total = len(videos)
+    
+    for i, video_url in enumerate(videos, 1):
+        print(f"\nProcessing video {i}/{total}: {video_url}")
+        success, _ = process_single_video_automatic(model, video_url, dataset_name)
+        if success:
+            successes += 1
+    
+    unmatched_file = f'unmatched_videos/unmatched_{dataset_name}.txt'
+    if os.path.exists(unmatched_file):
+        print(f"\nUnmatched videos were saved to: {unmatched_file}")
+    print(f"\nProcessing complete. Successfully processed {successes}/{total} videos.")
+    return dataset_name
+
+def get_playlist_metadata(playlist_url):
+    """Get metadata for a YouTube playlist."""
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': True,
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(playlist_url, download=False)
+            return {
+                'title': info.get('title', ''),
+                'description': info.get('description', ''),
+                'channel': info.get('uploader', ''),
+                'video_count': len(info.get('entries', [])),
+                'first_video_title': info.get('entries', [{}])[0].get('title', ''),
+                'Channel of the first video': info.get('entries', [{}])[0].get('uploader', ''),
+            }
+        except Exception as e:
+            print(f"Warning: Could not extract playlist metadata: {str(e)}")
+            return {}
+
+def get_dataset_name_suggestion(model, playlist_metadata):
+    """Get dataset name suggestion from LLM based on playlist metadata."""
+    generation_config = {
+        "temperature": 0,
+        "top_p": 0.95,
+        "top_k": 40,
+        "max_output_tokens": 256,
+    }
+
+    system_instruction = """
+    You are a Torah reading dataset name generator.
+    You must suggest dataset names in the following format:
+    Nusach-[Type]-[Reader-Name] (e.g. Nusach-Ashkenaz-david-Goldberg)
+    
+    Return only the suggested name, nothing else.
+    No explanations or additional text.
+    """
+    
+    prompt = f"""
+    Based on this playlist information:
+    Title: {playlist_metadata.get('title', '')}
+    Description: {playlist_metadata.get('description', '')}
+    Channel: {playlist_metadata.get('channel', '')}
+    Number of videos: {playlist_metadata.get('video_count', 0)}
+    Title of the first video: {playlist_metadata.get('first_video_title', '')}
+    Channel of the first video: {playlist_metadata.get('Channel of the first video', '')}
+    """
+    
+    model = genai.GenerativeModel(
+        model_name=GEMINI_MODEL_NAME,
+        generation_config=generation_config,
+        system_instruction=system_instruction
+    )
+    
+    try:
+        response = model.generate_content(prompt)
+        suggested_name = response.text.strip()
+        if suggested_name.startswith('"') and suggested_name.endswith('"'):
+            suggested_name = suggested_name[1:-1]
+        return suggested_name
+    except Exception as e:
+        print(f"Error getting dataset name suggestion: {str(e)}")
+        return None
+
+def process_playlist_url(url):
+    """Process URL that might contain both video and playlist information."""
+    if 'youtube.com/watch?' in url and has_playlist_param(url):
+        playlist_id = extract_playlist_id(url)
+        return get_playlist_url(playlist_id)
+    return url
+
 def main():
     api_key = get_api_key()
     model = setup_llm(api_key)
     
     last_dataset_name = get_last_dataset_name()
     dataset_name = None
-    
+
     while True:
-        link = input("\nEnter the YouTube video/playlist link (or 'q' to quit): ")
-        if link.lower() == 'q':
+        print("\nChoose an option:")
+        print("1. Process videos interactively")
+        print("2. Process playlist automatically")
+        print("3. Process video links file automatically")
+        print("q. Quit")
+        
+        choice = input("\nEnter your choice: ").lower()
+        
+        if choice == 'q':
             break
-
-        # Check if URL contains both video and playlist
-        if 'youtube.com/watch?' in link and has_playlist_param(link):
-            playlist_id = extract_playlist_id(link)
-            choice = input("\nThis URL contains both video and playlist. Do you want to:\n"
-                         "1. Process just this video\n"
-                         "2. Process the entire playlist\n"
-                         "Choose (1/2): ").strip()
             
-            if choice == '2':
-                link = get_playlist_url(playlist_id)
-                print(f"\nSwitching to playlist mode: {link}")
+        if choice not in ['1', '2', '3']:
+            print("Invalid choice")
+            continue
+
+        if choice == '1':
+            # Original interactive processing
+            link = input("\nEnter the YouTube video/playlist link (or 'q' to quit): ")
+            if link.lower() == 'q':
+                break
+                
+            # Check if URL contains both video and playlist
+            if 'youtube.com/watch?' in link and has_playlist_param(link):
+                playlist_id = extract_playlist_id(link)
+                choice = input("\nThis URL contains both video and playlist. Do you want to:\n"
+                             "1. Process just this video\n"
+                             "2. Process the entire playlist\n"
+                             "Choose (1/2): ").strip()
+                
+                if choice == '2':
+                    link = get_playlist_url(playlist_id)
+                    print(f"\nSwitching to playlist mode: {link}")
+                else:
+                    link = clean_video_url(link)
+                    print(f"\nProcessing single video: {link}")
             else:
-                link = clean_video_url(link)
-                print(f"\nProcessing single video: {link}")
-        else:
-            # Clean the URL if it's a video
-            cleaned_link = clean_video_url(link)
-            if cleaned_link != link:
-                print(f"Cleaned URL: {cleaned_link}")
-                link = cleaned_link
+                # Clean the URL if it's a video
+                cleaned_link = clean_video_url(link)
+                if cleaned_link != link:
+                    print(f"Cleaned URL: {cleaned_link}")
+                    link = cleaned_link
 
-        if is_playlist(link):
-            videos = get_playlist_videos(link)
-            print(f"\nFound {len(videos)} videos in playlist")
+            if is_playlist(link):
+                videos = get_playlist_videos(link)
+                print(f"\nFound {len(videos)} videos in playlist")
+                
+                # Ask for dataset name once for the entire playlist
+                if dataset_name is None:
+                    if last_dataset_name:
+                        use_last = input(f"Use last dataset name '{last_dataset_name}'? (y/n): ").lower() == 'y'
+                        dataset_name = last_dataset_name if use_last else input("Enter the name of the dataset: ")
+                    else:
+                        dataset_name = input("Enter the name of the dataset: ")
+                
+                for video_url in videos:
+                    print(f"\nProcessing video: {video_url}")
+                    success, dataset_name = process_single_video(model, video_url, dataset_name)
+                    if not success:
+                        print("Skipping to next video...")
+                        continue
+                    
+            else:  # Single video
+                success, dataset_name = process_single_video(model, link, dataset_name)
+                if not success:
+                    continue
+
+        elif choice == '2':
+            # Get playlist URL first
+            playlist_url = input("Enter the YouTube playlist URL: ")
+            playlist_url = process_playlist_url(playlist_url)
             
-            # Ask for dataset name once for the entire playlist
-            if dataset_name is None:
-                if last_dataset_name:
-                    use_last = input(f"Use last dataset name '{last_dataset_name}'? (y/n): ").lower() == 'y'
-                    dataset_name = last_dataset_name if use_last else input("Enter the name of the dataset: ")
+            if not is_playlist(playlist_url):
+                print("Error: Not a valid playlist URL")
+                continue
+            
+            # First check if there's a last used dataset name
+            if last_dataset_name:
+                print(f"\nLast used dataset name: {last_dataset_name}")
+                use_last = input("Use this name? (y/n): ").lower().startswith('y')
+                if use_last:
+                    dataset_name = last_dataset_name
+            
+            # Only get playlist metadata and suggestion if user doesn't want to use last name
+            if not dataset_name:
+                # Get playlist metadata and suggest dataset name
+                playlist_metadata = get_playlist_metadata(playlist_url)
+                if playlist_metadata:
+                    suggested_name = get_dataset_name_suggestion(model, playlist_metadata)
+                    if suggested_name:
+                        print(f"\nSuggested dataset name based on playlist: {suggested_name}")
+                        use_suggestion = input("Use this name? (y/n): ").lower().startswith('y')
+                        if use_suggestion:
+                            dataset_name = suggested_name
+                        else:
+                            dataset_name = input("Enter the name of the dataset: ")
+                    else:
+                        dataset_name = input("Enter the name of the dataset: ")
                 else:
                     dataset_name = input("Enter the name of the dataset: ")
             
-            for video_url in videos:
-                print(f"\nProcessing video: {video_url}")
-                success, dataset_name = process_single_video(model, video_url, dataset_name)
-                if not success:
-                    print("Skipping to next video...")
-                    continue
-                
-        else:  # Single video
-            success, dataset_name = process_single_video(model, link, dataset_name)
-            if not success:
+            videos = get_playlist_videos(playlist_url)
+            print(f"\nFound {len(videos)} videos in playlist")
+            if videos:
+                dataset_name = process_videos_automatic(model, videos, dataset_name)
+            else:
+                print("No videos found in playlist")
                 continue
-        
+
+        elif choice == '3':
+            file_path = input("Enter the path to the video links file: ")
+            print("\nReading links and processing playlists...")
+            videos = read_video_links_from_file(file_path)
+            if not videos:
+                print("No valid video links found in file")
+                continue
+            
+            if last_dataset_name:
+                print(f"\nLast used dataset name: {last_dataset_name}")
+                use_last = input("Use this name? (y/n): ").lower().startswith('y')
+                dataset_name = last_dataset_name if use_last else input("Enter the name of the dataset: ")
+            else:
+                dataset_name = input("Enter the name of the dataset: ")
+                
+            print(f"\nFound {len(videos)} total videos (including videos from playlists)")
+            dataset_name = process_videos_automatic(model, videos, dataset_name)
+
         # Save the dataset name for future use
         if dataset_name:
             save_dataset_name(dataset_name)
