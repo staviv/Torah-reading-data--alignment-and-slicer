@@ -1,3 +1,36 @@
+import os
+import librosa
+import soundfile as sf
+import scipy.signal
+from datetime import timedelta
+import srt
+from tqdm import tqdm
+from transformers import pipeline
+from vad.energy_vad import EnergyVAD
+import torch
+from transformers import WhisperForConditionalGeneration, WhisperProcessor
+
+# Constants
+MAX_SEGMENT_LENGTH = 30000  # 30 seconds in milliseconds
+MAX_SEGMENT_LENGTH_CHARS = 8000 
+WITH_TIMESTAMPS = False
+
+# choose the GPU with empty memory
+import subprocess
+mem = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.free', '--format=csv']).decode('utf-8').split('\n')
+mem = mem[1:-1]  # Skip header and empty last line
+mem = [int(m.replace(' MiB', '')) for m in mem]
+device = torch.device(f'cuda:{mem.index(max(mem))}' if torch.cuda.is_available() else 'cpu')
+
+
+# Load the model and processor
+model_name = "openai/whisper-large-v2"
+model = WhisperForConditionalGeneration.from_pretrained(model_name).to(device)
+processor = WhisperProcessor.from_pretrained(model_name)
+model.generation_config.language = "he"
+
+
+
 # Function to split audio file into segments
 def split_audio(audio_file, output_dir):
     """
