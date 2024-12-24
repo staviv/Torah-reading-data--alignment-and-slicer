@@ -5,7 +5,7 @@ import os
 import sys
 from typing import Dict, Set, Optional
 from get_all_aliyot_from_sefaria import parsha_names # parsha_names is a list of all the parshiot in the Torah
-from generate_parasha_variants import load_variants, is_valid_variant
+from generate_parasha_variants import load_variants, clean_variant
 
 
 def get_api_key():
@@ -43,9 +43,9 @@ def get_video_metadata(link):
                 'title': info.get('title', ''),
                 'description': info.get('description', ''),
                 'channel': info.get('channel', ''),
-                'upload_date': info.get('upload_date', ''),
-                'duration': info.get('duration', 0),
-                'view_count': info.get('view_count', 0),
+                # 'upload_date': info.get('upload_date', ''),
+                # 'duration': info.get('duration', 0),
+                # 'view_count': info.get('view_count', 0),
             }
         except Exception as e:
             print(f"Warning: Could not extract video metadata: {str(e)}")
@@ -107,7 +107,7 @@ def setup_llm(api_key):
             "response_mime_type": "application/json",
         }
         
-        system_instruction = """
+        system_instruction = f"""
         You are a Torah reading assistant. When given a YouTube video's metadata, analyze it and return a JSON object.
         
         IMPORTANT RULES FOR is_parasha FIELD:
@@ -115,23 +115,23 @@ def setup_llm(api_key):
         
         in parasha FIELD you must return exactly one of
         the valid parasha names from this list:
-        {parsha_names}
+        {{parsha_names}}
         
         The response must include the following fields:
         
-        {
+        {{
             "is_parasha": boolean (true ONLY if all conditions above are met),
             "parasha": string (must be exactly one of the valid parasha names, or null if not a weekly torah reading),
             "aliyah": string (either "all" for full parasha or "1"-"7" for specific aliyah),
             "dataset_name": string (suggested name for the dataset, or null if not applicable),
             "confidence": float (0-1, how confident you are in the prediction)
-        }
+        }}
 
         Example outputs:
-        {"is_parasha": true, "parasha": "Bereshit", "aliyah": "1", "dataset_name": "Nusach-Ashkenaz-david-goldberg", "confidence": 0.95}
-        {"is_parasha": false, "parasha": null, "aliyah": null, "dataset_name": null, "confidence": 0.9} <- Not a Torah reading
-        {"is_parasha": false, "parasha": null, "aliyah": null, "dataset_name": null, "confidence": 0.8} <- Torah lesson but not reading
-        {"is_parasha": false, "parasha": "Bereshit", "aliyah": null, "dataset_name": null, "confidence": 0.7} <- Mentions parasha but not reading
+        {{"is_parasha": true, "parasha": "Bereshit", "aliyah": "1", "dataset_name": "Nusach-Ashkenaz-david-goldberg", "confidence": 0.95}}
+        {{"is_parasha": false, "parasha": null, "aliyah": null, "dataset_name": null, "confidence": 0.9}} <- Not a Torah reading
+        {{"is_parasha": false, "parasha": null, "aliyah": null, "dataset_name": null, "confidence": 0.8}} <- Torah lesson but not reading
+        {{"is_parasha": false, "parasha": "Bereshit", "aliyah": null, "dataset_name": null, "confidence": 0.7}} <- Mentions parasha but not reading
         """
         
         return genai.GenerativeModel(
@@ -234,21 +234,23 @@ def print_parshiot():
 
 def find_matching_parasha(name: str, variants_dict: Dict[str, Set[str]]) -> Optional[str]:
     """Find matching parasha using pre-generated variants."""
-    if not name or not isinstance(name, str):
+    if not name or not isinstance(name, str):  # Check if name is a string and not empty
         return None
         
-    name = name.lower()
-    if not is_valid_variant(name):
+    name = clean_variant(name)
+    if not name:  # If name is empty after cleaning
         return None
-        
+    
+    print(f"\nTrying to match '{name}' to known parasha variants...")
     for parasha, variants in variants_dict.items():
+        print(f"Checking {parasha}...")
         if name in variants:
             return parasha
     return None
 
 def match_parasha_name(model, suggested_name):
     # Load pre-generated variants
-    variants_dict = load_variants()
+    variants_dict = load_variants("automatic using WhisperTimeSync/parasha_variants.json")
     
     if (not suggested_name) or (suggested_name in parsha_names):
         return suggested_name

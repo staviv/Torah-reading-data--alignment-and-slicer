@@ -4,9 +4,12 @@ import re
 import time
 from typing import Set, Dict, List, Optional
 
-def is_valid_variant(name: str) -> bool:
-    """Check if a variant contains only lowercase English letters."""
-    return bool(re.match(r'^[a-z]+$', name))
+def clean_variant(name: str) -> str:
+    """Remove all characters except lowercase English letters."""
+    # Convert to lowercase first
+    name = name.lower()
+    # Keep only a-z characters
+    return ''.join(c for c in name if c.isascii() and c.islower())
 
 def clean_llm_response(response_text: str) -> List[str]:
     """Clean and parse LLM response to extract variants."""
@@ -58,17 +61,17 @@ def get_variants_for_parasha(model, parasha: str) -> Set[str]:
     time.sleep(7)  # Wait 7 seconds after getting LLM response
     try:
         variants = clean_llm_response(response.text)
-        # Filter and clean variants
+        # Clean variants instead of filtering
         valid_variants = {
-            variant.lower() for variant in variants 
-            if isinstance(variant, str) and is_valid_variant(variant)
+            clean_variant(variant) for variant in variants 
+            if isinstance(variant, str) and clean_variant(variant)  # Only add non-empty results
         }
-        valid_variants.add(parasha.lower())  # Always include original name
+        valid_variants.add(clean_variant(parasha))  # Always include cleaned original name
         return valid_variants
         
     except Exception as e:
         print(f"Error generating variants for {parasha}: {e}")
-        return {parasha.lower()}
+        return {clean_variant(parasha)}
 
 def generate_all_variants(api_key: str, parsha_names: List[str]) -> Dict[str, Set[str]]:
     """Generate variants for all parasha names."""
@@ -84,8 +87,10 @@ def generate_all_variants(api_key: str, parsha_names: List[str]) -> Dict[str, Se
     
     variants_dict = {}
     for parasha in parsha_names:
-        if not is_valid_variant(parasha.lower()):
-            print(f"Warning: Original parasha name '{parasha}' contains invalid characters")
+        cleaned_parasha = clean_variant(parasha)
+        if not cleaned_parasha:
+            print(f"Warning: Original parasha name '{parasha}' resulted in empty string after cleaning")
+            continue
         variants = get_variants_for_parasha(model, parasha)
         variants_dict[parasha] = variants
         print(f"Generated variants for {parasha}: {variants}")
