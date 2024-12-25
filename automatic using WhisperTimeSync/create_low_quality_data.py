@@ -2,12 +2,10 @@ import json
 from get_torah_text_using_sefaria import get_chapter_string
 import scipy.io.wavfile as wavfile
 import io
-from six.moves.urllib.request import urlopen
 import pathlib
 import soundfile as sf
 from tqdm import tqdm
-from nikud_and_teamim import remove_nikud, replace_teamim_with_emphasis, remove_nikud_and_teamim
-from remove_nikud_dicta import remove_nikud_dicta
+from nikud_and_teamim import remove_nikud, replace_teamim_with_emphasis, remove_nikud_and_teamim, remove_nikud_dicta
 
 import torch
 from transformers import WhisperForConditionalGeneration, WhisperProcessor

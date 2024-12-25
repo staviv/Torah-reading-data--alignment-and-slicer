@@ -1,3 +1,6 @@
+from nikud_and_teamim import remove_nikud, replace_teamim_with_emphasis, remove_nikud_and_teamim, remove_nikud_dicta
+import os
+
 def create_steps_files(original_text_path):
     # get the text
     with open(original_text_path, "r") as f:
