@@ -1,6 +1,6 @@
 import os
-import librosa
 import soundfile as sf
+import librosa
 import scipy.signal
 from datetime import timedelta
 import srt
@@ -31,28 +31,18 @@ model.generation_config.language = "he"
 
 
 
-import numpy as np
-
-def normalize_audio(audio, target_amplitude=0.99):
-    """Normalizes the audio signal to a target peak amplitude.
-
-    Args:
-        audio: A numpy array representing the audio signal.
-        target_amplitude: The desired peak amplitude (between 0 and 1).
-
-    Returns:
-        A numpy array representing the normalized audio signal.
-    """
-    peak_amplitude = np.max(np.abs(audio))
-    if peak_amplitude == 0:
-        return audio  # Avoid division by zero for silent audio
-    print(f"Peak amplitude: {peak_amplitude}")
-    scaling_factor = target_amplitude / peak_amplitude
-    normalized_audio = audio * scaling_factor
-    return normalized_audio
-
-
 # Function to split audio file into segments
+def normalize_audio(audio):
+    """
+    Normalize audio to have zero mean
+    """
+    audio_mean = audio.mean()
+    audio_std = audio.std()
+    print(audio_mean, "\t", audio_std)
+    if audio_std > 0:
+        audio = (audio - audio_mean) #/ audio_std
+    return audio
+
 def split_audio(audio_file, output_dir):
     """
     Args:
@@ -76,9 +66,9 @@ def split_audio(audio_file, output_dir):
     # Normalize audio before VAD
     normalized_audio = normalize_audio(audio)
     voice_activity = vad(normalized_audio)
+
     # Apply median filter to smooth the voice activity detection
-    voice_activity_median = scipy.signal.medfilt(voice_activity, kernel_size=9)
-    print("the indices of zeros in voice_activity_median are: ", np.where(voice_activity_median == 0)[0])
+    voice_activity_median = scipy.signal.medfilt(voice_activity, kernel_size=15)
     segments = []
     segment_files = []
     start = 0
