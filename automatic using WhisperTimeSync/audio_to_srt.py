@@ -31,6 +31,27 @@ model.generation_config.language = "he"
 
 
 
+import numpy as np
+
+def normalize_audio(audio, target_amplitude=0.99):
+    """Normalizes the audio signal to a target peak amplitude.
+
+    Args:
+        audio: A numpy array representing the audio signal.
+        target_amplitude: The desired peak amplitude (between 0 and 1).
+
+    Returns:
+        A numpy array representing the normalized audio signal.
+    """
+    peak_amplitude = np.max(np.abs(audio))
+    if peak_amplitude == 0:
+        return audio  # Avoid division by zero for silent audio
+    print(f"Peak amplitude: {peak_amplitude}")
+    scaling_factor = target_amplitude / peak_amplitude
+    normalized_audio = audio * scaling_factor
+    return normalized_audio
+
+
 # Function to split audio file into segments
 def split_audio(audio_file, output_dir):
     """
@@ -51,10 +72,13 @@ def split_audio(audio_file, output_dir):
     )
 
     audio, sr = librosa.load(audio_file, sr=16000)
-    voice_activity = vad(audio)
-
+    
+    # Normalize audio before VAD
+    normalized_audio = normalize_audio(audio)
+    voice_activity = vad(normalized_audio)
     # Apply median filter to smooth the voice activity detection
-    voice_activity_median = scipy.signal.medfilt(voice_activity, kernel_size=15)
+    voice_activity_median = scipy.signal.medfilt(voice_activity, kernel_size=9)
+    print("the indices of zeros in voice_activity_median are: ", np.where(voice_activity_median == 0)[0])
     segments = []
     segment_files = []
     start = 0
@@ -69,6 +93,7 @@ def split_audio(audio_file, output_dir):
             if not voice_activity_median[end]:
                 break
 
+        # Use original audio for saving segments
         segment = audio[start * FRAME_LENGTH * sr // 1000:end * FRAME_LENGTH * sr // 1000]
         segments.append(segment)
 
@@ -78,6 +103,7 @@ def split_audio(audio_file, output_dir):
         segment_files.append(segment_filename)
 
         start = end + 1
+
     # if the last one is too short (less than 0.1 seconds), we throw it away
     if len(segments) > 1:
         last_segment_duration = len(segments[-1]) / sr

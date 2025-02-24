@@ -26,7 +26,7 @@ import subprocess
 
 
 # Define the directory containing the audio files
-audio_dir = "/home/prj8045/data/Nusach-Sephardic-Yerushalmi-Avi-Zarki/"
+# audio_dir = "/home/prj8045/data/Nusach-Sephardic-Yerushalmi-Avi-Zarki/"
 audio_dir = "/home/prj8045/data/abc/"
 
 whisperTimeSync = "/home/prj8045/Torah-reading-data--alignment-and-slicer/automatic using WhisperTimeSync/WhisperTimeSync/distrib/WhisperTimeSync.jar"
@@ -59,7 +59,7 @@ for filename in os.listdir(audio_dir):
         
         print(f"Processing: {filename}")
         # Generate initial SRT
-        generate_srt_from_audio(audio_path, raw_srt_path, batch_size=32)
+        generate_srt_from_audio(audio_path, raw_srt_path, batch_size=4)
         
         # Sync with text file
         iterative_sync_text_srt(text_path, whisperTimeSync)
