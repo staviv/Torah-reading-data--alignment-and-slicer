@@ -3,12 +3,23 @@ import google.generativeai as genai
 import json
 import os
 import sys
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, List, Tuple
 from get_all_aliyot_from_sefaria import parsha_names # parsha_names is a list of all the parshiot in the Torah
-from generate_parasha_variants import clean_variant
+# from generate_parasha_variants import clean_variant
 from parasha_matcher import ParashaMatcher
 
 GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
+
+# Define valid combined parashot with & separator
+VALID_COMBINED_PARASHOT = [
+    "Vayakhel&Pekudei",
+    "Tazria&Metzora",
+    "AchreiMot&Kedoshim",
+    "Behar&Bechukotai",
+    "Chukat&Balak",
+    "Matot&Masei",
+    "Nitzavim&Vayeilech"
+]
 
 def get_api_key():
     try:
@@ -87,6 +98,24 @@ def save_dataset_name(dataset_name):
     with open("last_dataset.txt", "w") as f:
         f.write(dataset_name)
 
+def is_valid_parasha(parasha_name):
+    """Validate single or combined parashot."""
+    # Check if it's a single valid parasha
+    if parasha_name in parsha_names:
+        return True
+    
+    # Check if it's a valid combined parasha
+    if parasha_name in VALID_COMBINED_PARASHOT:
+        return True
+    
+    return False
+
+def clean_variant(name: str) -> str:
+    """Clean a variant name to lowercase alphanumeric."""
+    if not name or not isinstance(name, str):
+        return ""
+    return name.lower().strip()
+
 def setup_llm(api_key):
     try:
         genai.configure(api_key=api_key)
@@ -104,15 +133,15 @@ def setup_llm(api_key):
         IMPORTANT RULES FOR is_parasha FIELD:
         Set is_parasha to TRUE if you can understand which parasha is being read in the video and it is NOT something else like a Torah lesson, haftarah, megillah, maftir, etc.
         
-        in parasha FIELD you must return exactly one of
-        the valid parasha names from this list:
-        {parsha_names}
+        In parasha FIELD you must return either:
+        1. Exactly one of the valid parasha names from this list: {parsha_names}
+        2. OR a combined parasha from this list: {VALID_COMBINED_PARASHOT}
         
         The response must include the following fields:
         
         {{
             "is_parasha": boolean (true ONLY if all conditions above are met),
-            "parasha": string (must be exactly one of the valid parasha names, or null if not a weekly torah reading),
+            "parasha": string (must be exactly one of the valid parasha names, a valid combined parasha, or null if not a weekly torah reading),
             "aliyah": string (either "all" for full parasha or "1"-"7" for specific aliyah),
             "dataset_name": string (suggested name for the dataset, or null if not applicable),
             "confidence": float (0-1, how confident you are in the prediction)
@@ -120,7 +149,8 @@ def setup_llm(api_key):
 
         Example outputs:
         {{"is_parasha": true, "parasha": "Bereshit", "aliyah": "1", "dataset_name": "Nusach-Ashkenaz-david-Goldberg", "confidence": 0.95}}
-        {{"is_parasha": false, "parasha": null, "aliyah": null, "dataset_name": Nusach-Yerushalmi-Avi-Levi, "confidence": 0.9}} <- Not a Torah reading
+        {{"is_parasha": true, "parasha": "Vayakhel&Pekudei", "aliyah": "all", "dataset_name": "Nusach-Ashkenaz-david-Goldberg", "confidence": 0.95}}
+        {{"is_parasha": false, "parasha": null, "aliyah": null, "dataset_name": "Nusach-Yerushalmi-Avi-Levi", "confidence": 0.9}} <- Not a Torah reading
         {{"is_parasha": false, "parasha": null, "aliyah": null, "dataset_name": null, "confidence": 0.8}} <- Torah lesson but not reading
         {{"is_parasha": false, "parasha": "Bereshit", "aliyah": null, "dataset_name": null, "confidence": 0.7}} <- Mentions parasha but not reading
         """
@@ -156,10 +186,23 @@ def clean_llm_json_response(response_text):
 def get_llm_suggestion(model, link, quiet=False):
     metadata = get_video_metadata(link)
     prompt = f"""
-    Analyze this YouTube video metadata to suggest parameters:
+    Analyze this YouTube video metadata to identify the Torah portion(s) being read:
     Title: {metadata.get('title', '')}
     Description: {metadata.get('description', '')} 
     Channel: {metadata.get('channel', '')}
+    
+    IMPORTANT: Make a clear decision about which parasha is being read.
+    
+    If you detect that two Torah portions are read together (like Vayakhel and Pekudei), 
+    you MUST use the format "Parasha1&Parasha2" with the & symbol between them.
+    Use the combined format ONLY if you're certain both portions are being read together.
+    
+    Valid single parashot: {parsha_names}
+    
+    Valid combined parashot (use EXACTLY these spellings with the & symbol):
+    {VALID_COMBINED_PARASHOT}
+    
+    Use the EXACT spelling from these lists. Do not create your own combinations.
     """
     response = model.generate_content(prompt)
     result = clean_llm_json_response(response.text)
@@ -200,6 +243,9 @@ def download_audio(link, output_path, start_time=None, end_time=None, quiet=Fals
         else:
             return False
 
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{
@@ -238,30 +284,110 @@ def print_parshiot():
         print(f"{p}: {i}", end="  ")
         if i % 4 == 0:  # Print 4 parshiot per line
             print()
+    print("\n\nValid combined parashot:")
+    for cp in VALID_COMBINED_PARASHOT:
+        print(cp)
 
-def find_matching_parasha(name: str, variants_dict: Dict[str, Set[str]]) -> Optional[str]:
-    """Find matching parasha using pre-generated variants."""
-    if not name or not isinstance(name, str):  # Check if name is a string and not empty
-        return None
+def select_parasha(suggestion):
+    """Enhanced parasha selection that handles combined parashot."""
+    print_parshiot()
     
-    print(f"\nTrying to match '{name}' to known parasha variants...")
+    suggested_parasha = suggestion.get("parasha")
+    
+    if suggested_parasha in parsha_names:
+        suggested_parsha_num = parsha_names.index(suggested_parasha) + 1
+        print(f"\nSuggested parasha: {suggested_parasha}")
+        use_suggestion = input("Use this suggested parasha? (y/n): ").lower().startswith('y')
+        if use_suggestion:
+            return suggested_parasha
+    elif suggested_parasha in VALID_COMBINED_PARASHOT:
+        print(f"\nSuggested combined parashot: {suggested_parasha}")
+        use_suggestion = input("Use this combined parasha? (y/n): ").lower().startswith('y')
+        if use_suggestion:
+            return suggested_parasha
+    
+    # Ask if user wants to enter a single parasha or combined parashot
+    choice = input("\nEnter '1' for single parasha or '2' for combined parashot: ")
+    
+    if choice == "1":
+        # Single parasha selection logic
+        suggested_num = ""
+        if suggested_parasha in parsha_names:
+            suggested_num = parsha_names.index(suggested_parasha) + 1
+            
+        parsha_num = int(get_input_with_suggestion(
+            "Enter the number of the parsha: ", 
+            suggested_num, 
+            lambda x: x.isdigit() and 1 <= int(x) <= len(parsha_names)))
+        return parsha_names[parsha_num - 1]
+    else:
+        # Combined parashot selection
+        print("\nChoose a combined parasha:")
+        for i, cp in enumerate(VALID_COMBINED_PARASHOT, 1):
+            print(f"{i}. {cp}")
         
-    name = clean_variant(name)
-    if not name:  # If name is empty after cleaning
-        return None
+        combined_num = int(get_input_with_suggestion(
+            "Enter the number of the combined parasha: ", 
+            "", 
+            lambda x: x.isdigit() and 1 <= int(x) <= len(VALID_COMBINED_PARASHOT)))
+        
+        return VALID_COMBINED_PARASHOT[combined_num - 1]
+
+class EnhancedParashaMatcher(ParashaMatcher):
+    def match_parasha_name(self, input_name):
+        """Enhanced matching that handles combined parashot."""
+        if not input_name or not isinstance(input_name, str):
+            return None, 0, False
+            
+        # First check if it's a valid combined parasha name
+        for combined in VALID_COMBINED_PARASHOT:
+            if combined.lower() == input_name.lower():
+                return combined, 1.0, True
+        
+        # Check if it might be a combined parasha with different separators
+        if "-" in input_name or " and " in input_name or "&" in input_name or "+" in input_name or " " in input_name:
+            # Replace common separators with standardized format
+            normalized = input_name.replace(" and ", "&").replace("-", "&").replace("+", "&")
+            normalized = normalized.replace(" ", "&")  # Also try spaces as separators
+            parts = [p.strip() for p in normalized.split("&") if p.strip()]
+            
+            if len(parts) == 2:
+                # Try to match each part separately
+                match1, conf1, exact1 = self._match_single_parasha(parts[0])
+                match2, conf2, exact2 = self._match_single_parasha(parts[1])
+                
+                if match1 and match2:
+                    # Check if this is a valid combination
+                    potential_combo = f"{match1}&{match2}"
+                    for valid_combo in VALID_COMBINED_PARASHOT:
+                        if valid_combo.lower() == potential_combo.lower():
+                            avg_confidence = (conf1 + conf2) / 2
+                            is_exact = exact1 and exact2
+                            return valid_combo, avg_confidence, is_exact
+                    
+                    # Check the reverse order too
+                    potential_combo_reversed = f"{match2}&{match1}"
+                    for valid_combo in VALID_COMBINED_PARASHOT:
+                        if valid_combo.lower() == potential_combo_reversed.lower():
+                            avg_confidence = (conf1 + conf2) / 2
+                            is_exact = exact1 and exact2
+                            return valid_combo, avg_confidence, is_exact
+        
+        # Fall back to single parasha matching
+        return super().match_parasha_name(input_name)
     
-    for parasha, variants in variants_dict.items():
-        print(f"Checking {parasha}...")
-        if name in variants:
-            return parasha
-    return None
+    def _match_single_parasha(self, name):
+        """Match a single parasha name."""
+        # Use the original matching logic from ParashaMatcher
+        return super().match_parasha_name(name)
 
 def match_parasha_name(model, suggested_name):
+    """Match a suggested parasha name to a valid parasha or combined parasha."""
     # Path of current file
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    matcher = ParashaMatcher(f"{current_dir}/parasha_variants.json")
+    matcher = EnhancedParashaMatcher(f"{current_dir}/parasha_variants.json")
     
-    if (not suggested_name) or (suggested_name in parsha_names):
+    if (not suggested_name) or (is_valid_parasha(suggested_name)):
         return suggested_name
     
     matched_name, confidence, is_exact = matcher.match_parasha_name(suggested_name)
@@ -269,6 +395,38 @@ def match_parasha_name(model, suggested_name):
         match_type = "exact" if is_exact else f"fuzzy (confidence: {confidence:.2f})"
         print(f"\nMatched '{suggested_name}' to '{matched_name}' using {match_type} matching")
         return matched_name
+    
+    # If no match found, try splitting the name and matching parts individually
+    if suggested_name and isinstance(suggested_name, str):
+        words = suggested_name.split()
+        if len(words) >= 2:
+            print(f"\nTrying to match individual words in '{suggested_name}'...")
+            
+            # Try to match each word individually
+            matched_parashas = []
+            for word in words:
+                if word.lower() in ['and', '&', 'parshat', 'parasha', 'parashat', 'parsha', 'portion', 'torah']:
+                    continue
+                    
+                word_match, word_conf, word_exact = matcher.match_parasha_name(word)
+                if word_match and word_conf > 0.7:
+                    matched_parashas.append((word_match, word_conf))
+            
+            # If we found exactly two parashas, check if they form a valid combination
+            if len(matched_parashas) == 2:
+                p1, conf1 = matched_parashas[0]
+                p2, conf2 = matched_parashas[1]
+                
+                potential_combo = f"{p1}&{p2}"
+                if potential_combo in VALID_COMBINED_PARASHOT:
+                    print(f"\nFound valid combined parasha: {potential_combo}")
+                    return potential_combo
+                
+                # Try reverse order
+                potential_combo = f"{p2}&{p1}"
+                if potential_combo in VALID_COMBINED_PARASHOT:
+                    print(f"\nFound valid combined parasha: {potential_combo}")
+                    return potential_combo
     
     print(f"\nWarning: Could not match '{suggested_name}' to any known variants")
     return None
@@ -285,7 +443,7 @@ def process_single_video(model, link, dataset_name=None):
             return False, dataset_name
 
     suggested_parasha = suggestion.get("parasha")
-    if suggested_parasha not in parsha_names:
+    if not is_valid_parasha(suggested_parasha):
         print(f"\nSuggested parasha name: {suggested_parasha}")
         print("\nThis parasha name is not in the valid list")
         print("\nTrying to match suggested parasha name to valid list...")
@@ -294,23 +452,11 @@ def process_single_video(model, link, dataset_name=None):
             suggestion["parasha"] = matched_parasha
         else:
             print("\nWarning: Could not match parasha name to valid list")
-            print(matched_parasha)
             if not input("Do you want to continue processing this current video (otherwise it will be skipped)? (y/n): ").lower().startswith('y'):
                 return False, dataset_name
 
-    print_parshiot()
-    
-    if suggestion.get("parasha") in parsha_names:
-        suggested_parsha_num = parsha_names.index(suggestion.get("parasha")) + 1
-    else:
-        suggested_parsha_num = ""
-
-    parsha_num = int(get_input_with_suggestion(
-        f"Enter the number of the parsha {parsha_names[suggested_parsha_num - 1]} ", 
-        suggested_parsha_num, 
-        lambda x: x.isdigit() and 1 <= int(x) <= len(parsha_names)))
-
-    parsha = parsha_names[parsha_num - 1]
+    # Use the enhanced parasha selection function
+    parsha = select_parasha(suggestion)
     
     aliyah = get_input_with_suggestion(
         "Enter aliyah number (1-7) or 'all' for full parasha: ", 
@@ -418,7 +564,7 @@ def process_single_video_automatic(model, link, dataset_name):
         return False, dataset_name
 
     suggested_parasha = suggestion.get("parasha")
-    if suggested_parasha not in parsha_names:
+    if not is_valid_parasha(suggested_parasha):
         matched_parasha = match_parasha_name(model, suggested_parasha)
         if matched_parasha:
             suggestion["parasha"] = matched_parasha

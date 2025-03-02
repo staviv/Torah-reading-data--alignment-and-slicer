@@ -31,7 +31,7 @@ def iterative_sync_text_srt(text_path, raw_srt_path, whisperTimeSync):
     # create temp directory
     os.makedirs("temp", exist_ok=True)
     # copy srt file to temp
-    os.system(f"cp {raw_srt_path} temp/")
+    subprocess.run(["cp", raw_srt_path, "temp/"])
     
     create_steps_files(text_path)
     one_step_sync_text_srt(os.path.basename(raw_srt_path), "step01.txt", whisperTimeSync)

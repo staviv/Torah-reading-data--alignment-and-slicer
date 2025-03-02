@@ -90,6 +90,32 @@ def save_aliyot_text_to_files(aliyot, parsha_names, output_folder="text"):
         bar.update(1)
     bar.close()
 
-if __name__ == "__main__":
-    save_aliyot_text_to_files(aliot_list, parsha_names, "Torah-reading-data--alignment-and-slicer/text")
 
+# create files for dual parashot (Vayakhel&Pekudei-all.txt, Tazria&Metzora-all.txt, etc.)
+# from files for individual parashot
+def create_combined_parashot_files(output_folder="text"):
+    VALID_COMBINED_PARASHOT = [
+        "Vayakhel&Pekudei",
+        "Tazria&Metzora",
+        "AchreiMot&Kedoshim",
+        "Behar&Bechukotai",
+        "Chukat&Balak",
+        "Matot&Masei",
+        "Nitzavim&Vayeilech"
+    ]
+    for combined_parasha in VALID_COMBINED_PARASHOT:
+        parashot = combined_parasha.split("&")
+        # combine the text of the 2 individual parashot
+        combined_text = ""
+        for parasha in parashot:
+            with open(f"{output_folder}/{parasha}-all.txt", "r", encoding="utf-8") as f:
+                combined_text += f.read() + "\n"
+        combined_text = combined_text.strip()
+        # save the combined text to a new file
+        with open(f"{output_folder}/{combined_parasha}-all.txt", "w", encoding="utf-8") as f:
+            f.write(combined_text)
+        
+
+if __name__ == "__main__":
+    # save_aliyot_text_to_files(aliot_list, parsha_names, "Torah-reading-data--alignment-and-slicer/text")
+    create_combined_parashot_files("/home/prj8045/data/text")
