@@ -71,14 +71,23 @@ parsha_names = ["Bereshit", "Noach", "LechLecha", "Vayera", "ChayeiSara", "Toldo
 # Save the text of the aliyot to files "parsha_name-aliyah_number.txt" (Bereshit-1.txt) in the "aliyot_text" folder
 def save_aliyot_text_to_files(aliyot, parsha_names, output_folder="text"):
     # initialize tqdm progress bar
-    bar = tqdm(total=len(parsha_names)*7)
+    bar = tqdm(total=len(parsha_names)*8) 
     for i, parsha in enumerate(parsha_names):
+        # Save individual aliyot
+        aliyot_texts = []
         for j in range(1, 8):
             text = get_sefaria_text_using_api(aliyot[i*7+j-1])
+            aliyot_texts.append(text)
             os.makedirs(output_folder, exist_ok=True) # Create output folder if it doesn't exist and if it does, do nothing
             with open(f"{output_folder}/{parsha_names[i]}-{j}.txt", "w", encoding="utf-8") as f:
                 f.write(text)
             bar.update(1)
+            
+        # Save the complete parsha (all aliyot combined)
+        full_parsha_text = '\n'.join(aliyot_texts)
+        with open(f"{output_folder}/{parsha_names[i]}-all.txt", "w", encoding="utf-8") as f:
+            f.write(full_parsha_text)
+        bar.update(1)
     bar.close()
 
 if __name__ == "__main__":

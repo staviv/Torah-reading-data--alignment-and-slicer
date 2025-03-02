@@ -22,17 +22,20 @@ def create_steps_files(original_text_path):
 
     # the third step is the ketiv haser with teamim, for that we use our own library
     ketiv_haser_teamim = remove_nikud(original_text) # step 4
-
-    # save all the steps
-    with open("step01.txt", "w") as f:
+    
+    temp_dir = os.path.join(os.getcwd(), "temp")
+    # if the directory does not exist, create it
+    os.makedirs(temp_dir, exist_ok=True)
+    # save all the steps in temp_dir
+    with open(os.path.join(temp_dir, "step01.txt"), "w") as f:
         f.write(cleaned_ketiv_maleh)
-    with open("step02.txt", "w") as f:
+    with open(os.path.join(temp_dir, "step02.txt"), "w") as f:
         f.write(ketiv_maleh)
-    with open("step03.txt", "w") as f:
+    with open(os.path.join(temp_dir, "step03.txt"), "w") as f:
         f.write(ketiv_haser_no_teamim)
-    with open("step04.txt", "w") as f:
+    with open(os.path.join(temp_dir, "step04.txt"), "w") as f:
         f.write(ketiv_haser_teamim)
-    with open("final_step.txt", "w") as f:
+    with open(os.path.join(temp_dir, "final_step.txt"), "w") as f:
         f.write(original_text)
 
     # print("step 1: \n", cleaned_ketiv_maleh)
@@ -42,6 +45,7 @@ def create_steps_files(original_text_path):
     # print("with nikud: \n", original_text.split("\n")[0])
     
 def remove_steps_files():
+    temp_dir = os.path.join(os.getcwd(), "temp")
     for i in range(1, 5):
-        os.remove(f"step0{i}.txt")
-    os.remove("final_step.txt")
+        os.remove(os.path.join(temp_dir, f"step0{i}.txt"))
+    os.remove(os.path.join(temp_dir, "final_step.txt"))
