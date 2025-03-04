@@ -8,7 +8,7 @@ from get_all_aliyot_from_sefaria import parsha_names # parsha_names is a list of
 # from generate_parasha_variants import clean_variant
 from parasha_matcher import ParashaMatcher
 
-GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"
+GEMINI_MODEL_NAME = "gemini-2.0-flash"
 
 # Define valid combined parashot with & separator
 VALID_COMBINED_PARASHOT = [
@@ -132,6 +132,8 @@ def setup_llm(api_key):
         
         IMPORTANT RULES FOR is_parasha FIELD:
         Set is_parasha to TRUE if you can understand which parasha is being read in the video and it is NOT something else like a Torah lesson, haftarah, megillah, maftir, etc.
+        Just if the video is a weekly Torah portion reading, and you can identify which parasha and which aliyah (just 1-7 or or all, NOT Maftir) are being read, set is_parasha to TRUE.
+        If it somethig else, set is_parasha to FALSE.
         
         In parasha FIELD you must return either:
         1. Exactly one of the valid parasha names from this list: {parsha_names}
@@ -759,6 +761,7 @@ def main():
                 continue
             
             # First check if there's a last used dataset name
+            dataset_name = None  # Reset dataset_name to ensure we don't use a previous value
             if last_dataset_name:
                 print(f"\nLast used dataset name: {last_dataset_name}")
                 use_last = input("Use this name? (y/n): ").lower().startswith('y')
@@ -783,6 +786,10 @@ def main():
                 else:
                     dataset_name = input("Enter the name of the dataset: ")
             
+            # Make sure we have a dataset name before proceeding
+            if not dataset_name:
+                dataset_name = input("Enter the name of the dataset: ")
+                
             videos = get_playlist_videos(playlist_url)
             print(f"\nFound {len(videos)} videos in playlist")
             if videos:
