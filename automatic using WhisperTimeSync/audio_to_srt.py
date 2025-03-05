@@ -20,7 +20,10 @@ MIN_SEGMENT_LENGTH = 1000   # 1 second in milliseconds
 MAX_SEGMENT_LENGTH_CHARS = 9999 
 WITH_TIMESTAMPS = False # Set to False, True (the worst option), or "word" to get timestamps for each word
 MIN_GPU_MEMORY = 23000  # 23GB in MB
-BATCH_SIZE_PER_GPU = 8  # Number of segments to process in a single batch on each GPU
+BATCH_SIZE_PER_GPU = 16  # Number of segments to process in a single batch on each GPU
+
+# Parent directory for all temporary files
+TEMP_PARENT_DIR = "temp"
 
 # Thread-local storage for model instances
 thread_local = threading.local()
@@ -157,7 +160,7 @@ def split_audio(audio_file, output_dir):
     Returns:
         A list of file names for the created audio segments.
     """
-    ENERGY_THRESHOLD = 0.002
+    ENERGY_THRESHOLD = 0.005
     FRAME_LENGTH = 20  # in milliseconds
     vad = EnergyVAD(
         sample_rate=16000,
@@ -174,7 +177,7 @@ def split_audio(audio_file, output_dir):
     voice_activity = vad(normalized_audio)
 
     # Apply median filter to smooth the voice activity detection
-    voice_activity_median = scipy.signal.medfilt(voice_activity, kernel_size=15)
+    voice_activity_median = scipy.signal.medfilt(voice_activity, kernel_size=7)
     segments = []
     segment_files = []
     segment_lengths = []
@@ -337,11 +340,11 @@ def process_audio_segments_batch(audio_segments, start_times, last_index):
     """
     # Determine optimal batch size based on available GPUs
     effective_batch_size = len(audio_segments)
-    if len(available_gpus) > 1:
-        # When using DataParallel, we can process larger batches efficiently
-        print(f'Processing batch of {effective_batch_size} segments across {len(available_gpus)} GPUs')
-    else:
-        print(f'Processing batch of {effective_batch_size} segments')
+    # if len(available_gpus) > 1:
+    #     # When using DataParallel, we can process larger batches efficiently
+    #     print(f'Processing batch of {effective_batch_size} segments across {len(available_gpus)} GPUs')
+    # else:
+    #     print(f'Processing batch of {effective_batch_size} segments')
     
     asr = pipeline("automatic-speech-recognition", 
                   model=model, 
@@ -414,7 +417,7 @@ def process_batch_on_gpu(batch_items, gpu_id):
     batch_size = len(segments)
     segment_ids = [f"{file_id}:{idx+1}" for file_id, idx in zip(file_ids, indices)]
     
-    print(f"GPU {gpu_id} processing batch of {batch_size} segments: {segment_ids}")
+    # print(f"GPU {gpu_id} processing batch of {batch_size} segments: {segment_ids}")
     
     # Process batch all at once
     results = asr(segments, return_timestamps=WITH_TIMESTAMPS,
@@ -437,7 +440,7 @@ def process_batch_on_gpu(batch_items, gpu_id):
         subtitles, _ = create_srt_segment(result, start_time, indices[i], segment_duration)
         batch_results[(file_ids[i], indices[i])] = subtitles
         
-    print(f"GPU {gpu_id} completed batch of {batch_size} segments: {segment_ids}")
+    # print(f"GPU {gpu_id} completed batch of {batch_size} segments: {segment_ids}")
     return batch_results
 
 def generate_multiple_srt_from_audio(audio_files, output_srt_files):
@@ -451,12 +454,15 @@ def generate_multiple_srt_from_audio(audio_files, output_srt_files):
     """
     if len(audio_files) != len(output_srt_files):
         raise ValueError("Number of audio files must match number of output SRT files")
+    
+    # Ensure the parent temp directory exists
+    os.makedirs(TEMP_PARENT_DIR, exist_ok=True)
         
-    # Create unique output directories for segments
+    # Create unique output directories for segments inside the parent temp directory
     temp_dirs = []
     for audio_file in audio_files:
         file_id = os.path.splitext(os.path.basename(audio_file))[0]
-        output_dir = f"temp_audio_segments_{file_id}"
+        output_dir = os.path.join(TEMP_PARENT_DIR, f"audio_segments_{file_id}")
         os.makedirs(output_dir, exist_ok=True)
         temp_dirs.append(output_dir)
 
@@ -547,6 +553,9 @@ def generate_multiple_srt_from_audio(audio_files, output_srt_files):
         for i in range(len(all_segments)):
             task_queue.put(i)
             
+        # Create a progress bar for batch processing
+        pbar = tqdm(total=len(all_segments), desc="Processing segments")
+        
         def worker(gpu_id):
             """Worker function that processes batches from the queue"""
             while True:
@@ -582,6 +591,8 @@ def generate_multiple_srt_from_audio(audio_files, output_srt_files):
                     with lock:
                         for key, subtitles in batch_results.items():
                             segment_results[key] = subtitles
+                        # Update progress bar
+                        pbar.update(len(batch_items))
                         
                     # Mark all tasks in this batch as done
                     for _ in range(len(batch_items)):
@@ -609,6 +620,7 @@ def generate_multiple_srt_from_audio(audio_files, output_srt_files):
             
         # Wait for all threads to complete
         task_queue.join()
+        pbar.close()
     
     else:
         # Fall back to sequential processing on CPU
@@ -667,6 +679,9 @@ def generate_srt_from_audio(audio_file, output_srt_file):
     generate_multiple_srt_from_audio([audio_file], [output_srt_file])
 
 def main():
+    # Ensure the parent temp directory exists
+    os.makedirs(TEMP_PARENT_DIR, exist_ok=True)
+    
     audio_file = "test.wav"
     output_srt_file = "output.srt"
     generate_srt_from_audio(audio_file, output_srt_file)

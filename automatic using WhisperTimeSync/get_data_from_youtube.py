@@ -7,6 +7,8 @@ from typing import Dict, Set, Optional, List, Tuple
 from get_all_aliyot_from_sefaria import parsha_names # parsha_names is a list of all the parshiot in the Torah
 # from generate_parasha_variants import clean_variant
 from parasha_matcher import ParashaMatcher
+import concurrent.futures
+from functools import partial
 
 GEMINI_MODEL_NAME = "gemini-2.0-flash"
 
@@ -568,7 +570,7 @@ def process_single_video(model, link, dataset_name=None):
         if not input("Continue with this dataset name? (y/n): ").lower().startswith('y'):
             dataset_name = input("Enter new dataset name: ")
 
-    dataset_dir = f"/home/prj8045/data/{dataset_name}"
+    dataset_dir = f"/home/prj8045/train_data/{dataset_name}"
     audio_path = f"{dataset_dir}/{parsha}-{aliyah}.mp3"
     
     # Add time selection before download
@@ -657,7 +659,7 @@ def process_single_video_automatic(model, link, dataset_name):
     parsha = suggestion["parasha"]
     aliyah = suggestion.get("aliyah", "all")
     
-    dataset_dir = f"/home/prj8045/data/{dataset_name}"
+    dataset_dir = f"/home/prj8045/train_data/{dataset_name}"
     audio_path = f"{dataset_dir}/{parsha}-{aliyah}.mp3"
     
     if not download_audio(link, audio_path, quiet=True):
@@ -666,22 +668,71 @@ def process_single_video_automatic(model, link, dataset_name):
     
     return True, dataset_name
 
-def process_videos_automatic(model, videos, dataset_name):
-    """Process multiple videos automatically."""
-    successes = 0
-    total = len(videos)
+
+
+def process_single_video_automatic_wrapper(video_url, index, total, model, dataset_name):
+    """Wrapper for process_single_video_automatic that handles progress reporting.
     
-    for i, video_url in enumerate(videos, 1):
-        print(f"\nProcessing video {i}/{total}: {video_url}")
-        success, _ = process_single_video_automatic(model, video_url, dataset_name)
-        if success:
-            successes += 1
+    Args:
+        video_url: URL of the video to process
+        index: Current video index for progress reporting
+        total: Total number of videos for progress reporting
+        model: The LLM model to use
+        dataset_name: Name of the dataset
+        
+    Returns:
+        Boolean indicating success or failure
+    """
+    print(f"\nProcessing video {index}/{total}: {video_url}")
+    success, _ = process_single_video_automatic(model, video_url, dataset_name)
+    return success
+
+def process_videos_automatic(model, videos, dataset_name, max_workers=5):
+    """Process multiple videos automatically in parallel.
+    
+    Args:
+        model: The LLM model to use for suggestions
+        videos: List of video URLs to process
+        dataset_name: Name of the dataset
+        max_workers: Maximum number of parallel workers (default: 5)
+    
+    Returns:
+        The dataset name
+    """
+    total = len(videos)
+    print(f"\nProcessing {total} videos in parallel with {max_workers} workers...")
+    
+    # Create a partial function with fixed arguments
+    process_func = partial(process_single_video_automatic_wrapper, 
+                          model=model, 
+                          dataset_name=dataset_name)
+    
+    # Track successful videos
+    successes = 0
+    
+    # Use ThreadPoolExecutor to process videos in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks and create a dictionary mapping futures to their URLs for reporting
+        future_to_url = {executor.submit(process_func, video_url, i, total): video_url 
+                         for i, video_url in enumerate(videos, 1)}
+        
+        # Process results as they complete
+        for future in concurrent.futures.as_completed(future_to_url):
+            video_url = future_to_url[future]
+            try:
+                success = future.result()
+                if success:
+                    successes += 1
+            except Exception as exc:
+                print(f"\nError processing {video_url}: {exc}")
+                save_unmatched_link(video_url, dataset_name, f"Exception: {str(exc)}")
     
     unmatched_file = f'unmatched_videos/unmatched_{dataset_name}.txt'
     if os.path.exists(unmatched_file):
         print(f"\nUnmatched videos were saved to: {unmatched_file}")
     print(f"\nProcessing complete. Successfully processed {successes}/{total} videos.")
     return dataset_name
+
 
 def get_playlist_metadata(playlist_url):
     """Get metadata for a YouTube playlist."""

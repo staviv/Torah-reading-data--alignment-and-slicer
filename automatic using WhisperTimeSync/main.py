@@ -7,13 +7,16 @@ import subprocess
 
 # Define the directory containing the audio files
 # audio_dir = "/home/prj8045/data/Nusach-Sephardic-Yerushalmi-Avi-Zarki/"
-audio_dir = "/home/prj8045/data/Nusach-Ashkenaz-Naor-Vilner/"
-text_dir = "/home/prj8045/data/text/"
+audio_dir = "/home/prj8045/train_data/sefaradi-yerushalmi-yuval-avidani/"
+text_dir = "/home/prj8045/train_data/text/"
 
 whisperTimeSync = "/home/prj8045/Torah-reading-data--alignment-and-slicer/automatic using WhisperTimeSync/WhisperTimeSync/distrib/WhisperTimeSync.jar"
 
 # Lock for synchronizing temp directory creation and cleanup
 temp_dir_lock = threading.Lock()
+
+# Create a parent temp directory
+TEMP_PARENT_DIR = "temp"
 
 def one_step_sync_text_srt(low_quality_srt_path, text_path, whisperTimeSync, temp_dir):
     """
@@ -30,8 +33,12 @@ def iterative_sync_text_srt(text_path, raw_srt_path, whisperTimeSync, file_id):
     Iteratively synchronize the text and the low-quality SRT file.
     Uses a unique temp directory for each file to avoid conflicts.
     """
-    # Create a unique temp directory for this file
-    temp_dir = f"temp_{file_id}"
+    # Create a temp parent directory if it doesn't exist
+    with temp_dir_lock:
+        os.makedirs(TEMP_PARENT_DIR, exist_ok=True)
+    
+    # Create a unique temp directory for this file inside the parent temp directory
+    temp_dir = os.path.join(TEMP_PARENT_DIR, f"temp_{file_id}")
     with temp_dir_lock:
         os.makedirs(temp_dir, exist_ok=True)
     
@@ -58,6 +65,9 @@ def main():
     # Initialize models once before processing any files
     initialize_models()
     
+    # Create the temp parent directory
+    os.makedirs(TEMP_PARENT_DIR, exist_ok=True)
+    
     # Get list of all audio files to be processed
     audio_files = [f for f in os.listdir(audio_dir) if f.endswith(('.mp3', '.wav'))]
     total_files = len(audio_files)
@@ -65,7 +75,7 @@ def main():
     print(f"Found {total_files} audio files to process")
     print(f"Processing all files together for optimal GPU batch utilization")
     
-    # Create paths for all files
+    # # Create paths for all files
     audio_paths = [os.path.join(audio_dir, filename) for filename in audio_files]
     raw_srt_paths = [os.path.splitext(path)[0] + '_RAW.srt' for path in audio_paths]
     final_srt_paths = [os.path.splitext(path)[0] + '.srt' for path in audio_paths]
