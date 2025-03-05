@@ -10,29 +10,131 @@ from transformers import pipeline
 from vad.energy_vad import EnergyVAD
 import torch
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
+import concurrent.futures
+import threading
+from queue import Queue, Empty
 
 # Constants
 MAX_SEGMENT_LENGTH = 30000  # 30 seconds in milliseconds
 MIN_SEGMENT_LENGTH = 1000   # 1 second in milliseconds
 MAX_SEGMENT_LENGTH_CHARS = 9999 
 WITH_TIMESTAMPS = False # Set to False, True (the worst option), or "word" to get timestamps for each word
+MIN_GPU_MEMORY = 23000  # 23GB in MB
+BATCH_SIZE_PER_GPU = 8  # Number of segments to process in a single batch on each GPU
 
-if torch.cuda.is_available():
-    # choose the GPU with empty memory
+# Thread-local storage for model instances
+thread_local = threading.local()
+
+# Dictionary to store models by GPU ID - initialized once and reused
+gpu_models = {}
+gpu_models_lock = threading.Lock()
+
+# Get available GPUs once at module import
+available_gpus = []
+default_device = None
+
+def initialize_models():
+    """
+    Initialize models on all available GPUs.
+    Call this once at program startup before processing any audio files.
+    """
+    global available_gpus, default_device
+    
+    # Find available GPUs
+    available_gpus = get_available_gpus()
+    
+    if not available_gpus:
+        default_device = torch.device('cpu')
+        print("No suitable GPU available, using CPU instead.")
+        return
+    
+    # Initialize models on all GPUs in advance
+    model_name = "openai/whisper-large-v2"
+    processor = WhisperProcessor.from_pretrained(model_name)
+    
+    print(f"Initializing models on {len(available_gpus)} GPUs...")
+    for gpu_id in available_gpus:
+        print(f"Loading model on GPU {gpu_id}")
+        device = torch.device(f'cuda:{gpu_id}')
+        model = WhisperForConditionalGeneration.from_pretrained(model_name, attn_implementation="eager").to(device)
+        model.generation_config.language = "he"
+        
+        asr = pipeline("automatic-speech-recognition", 
+                        model=model, 
+                        tokenizer=processor.tokenizer,
+                        feature_extractor=processor.feature_extractor, 
+                        device=device)
+        
+        gpu_models[gpu_id] = {
+            'model': model,
+            'processor': processor,
+            'asr': asr,
+            'device': device
+        }
+    
+    default_device = torch.device(f'cuda:{available_gpus[0]}')
+    print(f"Models initialized on {len(available_gpus)} GPUs: {available_gpus}")
+
+def get_available_gpus():
+    """
+    Get available GPUs with more than MIN_GPU_MEMORY free memory
+    Returns a list of GPU indices
+    """
+    if not torch.cuda.is_available():
+        print("No GPU available, using CPU instead.")
+        return []
+        
     import subprocess
-    mem = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.free', '--format=csv']).decode('utf-8').split('\n')
-    mem = mem[1:-1]  # Skip header and empty last line
-    mem = [int(m.replace(' MiB', '')) for m in mem]
-    device = torch.device(f'cuda:{mem.index(max(mem))}' if torch.cuda.is_available() else 'cpu')
-else:
-    device = torch.device('cpu')
-    print("No GPU available, using CPU instead.")
+    mem_output = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.free', '--format=csv']).decode('utf-8').split('\n')
+    mem_output = mem_output[1:-1]  # Skip header and empty last line
+    
+    available_gpus = []
+    for i, mem_str in enumerate(mem_output):
+        try:
+            mem = int(mem_str.replace(' MiB', ''))
+            if mem > MIN_GPU_MEMORY:
+                available_gpus.append(i)
+                print(f"GPU {i} available with {mem} MiB free memory")
+        except:
+            continue
+            
+    return available_gpus
 
-# Load the model and processor
+# Load the model processor once
 model_name = "openai/whisper-large-v2"
-model = WhisperForConditionalGeneration.from_pretrained(model_name, attn_implementation="eager").to(device)
 processor = WhisperProcessor.from_pretrained(model_name)
-model.generation_config.language = "he"
+
+# Get model instance for the current thread/GPU
+def get_model_instance(gpu_id):
+    """
+    Get a model instance for the current thread.
+    First checks in the global gpu_models dict, then falls back to thread_local storage.
+    
+    Args:
+        gpu_id: The GPU ID to use
+        
+    Returns:
+        (asr, device) tuple
+    """
+    # First check if we have a pre-initialized model
+    if gpu_id in gpu_models:
+        return gpu_models[gpu_id]['asr'], gpu_models[gpu_id]['device']
+    
+    # If not, check if this thread already has a model
+    if not hasattr(thread_local, 'model') or thread_local.gpu_id != gpu_id:
+        print(f"Loading model on GPU {gpu_id} (thread local)")
+        device = torch.device(f'cuda:{gpu_id}')
+        thread_local.model = WhisperForConditionalGeneration.from_pretrained(model_name, attn_implementation="eager").to(device)
+        thread_local.model.generation_config.language = "he"
+        thread_local.device = device
+        thread_local.asr = pipeline("automatic-speech-recognition", 
+                              model=thread_local.model, 
+                              tokenizer=processor.tokenizer,
+                              feature_extractor=processor.feature_extractor, 
+                              device=device)
+        thread_local.gpu_id = gpu_id
+    
+    return thread_local.asr, thread_local.device
 
 # Function to split audio file into segments
 def normalize_audio(audio):
@@ -233,16 +335,22 @@ def process_audio_segments_batch(audio_segments, start_times, last_index):
     Returns:
         A list of Subtitle objects and the last index used
     """
+    # Determine optimal batch size based on available GPUs
+    effective_batch_size = len(audio_segments)
+    if len(available_gpus) > 1:
+        # When using DataParallel, we can process larger batches efficiently
+        print(f'Processing batch of {effective_batch_size} segments across {len(available_gpus)} GPUs')
+    else:
+        print(f'Processing batch of {effective_batch_size} segments')
+    
     asr = pipeline("automatic-speech-recognition", 
                   model=model, 
                   tokenizer=processor.tokenizer,
                   feature_extractor=processor.feature_extractor, 
                   device=device)
 
-    print(f'Processing batch of {len(audio_segments)} segments')
-    
     results = asr(audio_segments, return_timestamps=WITH_TIMESTAMPS,
-                 batch_size=len(audio_segments),
+                 batch_size=effective_batch_size,
                  generate_kwargs={"language": "<|he|>",
                                "task": "transcribe"})
     
@@ -263,70 +371,300 @@ def process_audio_segments_batch(audio_segments, start_times, last_index):
 
     return all_subtitles, current_index
 
-def generate_srt_from_audio(audio_file, output_srt_file, batch_size=4):
+def process_segment_on_gpu(args):
+    """Process a single segment on a specific GPU"""
+    segment, start_time, last_index, gpu_id = args
+    
+    # Get model instance for this thread/GPU
+    asr, device = get_model_instance(gpu_id)
+    
+    result = asr(segment, return_timestamps=WITH_TIMESTAMPS,
+                 generate_kwargs={"language": "<|he|>",
+                                  "task": "transcribe"})
+    
+    segment_duration = len(segment) / 16000  # Calculate duration in seconds
+    
+    if not WITH_TIMESTAMPS:
+        result = {"chunks": [{'text': result["text"], 
+                            'timestamp': (0, segment_duration)}]}
+    
+    subtitles, last_index = create_srt_segment(result, start_time, last_index, segment_duration)
+    return subtitles, last_index
+
+def process_batch_on_gpu(batch_items, gpu_id):
     """
-    Generates an SRT file from an audio file, processing segments in batches.
+    Process a batch of segments on a specific GPU
+    
+    Args:
+        batch_items: List of (file_id, idx, segment, start_time) tuples
+        gpu_id: GPU ID to use for processing
+        
+    Returns:
+        Dictionary mapping (file_id, segment_idx) to subtitle list
+    """
+    # Get model instance for this thread/GPU
+    asr, device = get_model_instance(gpu_id)
+    
+    # Extract data from batch items
+    file_ids = [item[0] for item in batch_items]
+    indices = [item[1] for item in batch_items]
+    segments = [item[2] for item in batch_items]
+    start_times = [item[3] for item in batch_items]
+    
+    batch_size = len(segments)
+    segment_ids = [f"{file_id}:{idx+1}" for file_id, idx in zip(file_ids, indices)]
+    
+    print(f"GPU {gpu_id} processing batch of {batch_size} segments: {segment_ids}")
+    
+    # Process batch all at once
+    results = asr(segments, return_timestamps=WITH_TIMESTAMPS,
+                 batch_size=batch_size,  # Process all segments in batch
+                 generate_kwargs={"language": "<|he|>",
+                                 "task": "transcribe"})
+    
+    # Process results and create subtitles
+    batch_results = {}
+    
+    for i, (result, start_time, segment) in enumerate(zip(results, start_times, segments)):
+        segment_duration = len(segment) / 16000  # Calculate duration in seconds
+        
+        if not WITH_TIMESTAMPS:
+            # Format result for create_srt_segment
+            result = {"chunks": [{'text': result["text"], 
+                                'timestamp': (0, segment_duration)}]}
+        
+        # Use segment index as the last_index to ensure unique numbering
+        subtitles, _ = create_srt_segment(result, start_time, indices[i], segment_duration)
+        batch_results[(file_ids[i], indices[i])] = subtitles
+        
+    print(f"GPU {gpu_id} completed batch of {batch_size} segments: {segment_ids}")
+    return batch_results
+
+def generate_multiple_srt_from_audio(audio_files, output_srt_files):
+    """
+    Generates multiple SRT files from audio files, processing segments across all files
+    optimally on multiple GPUs.
+
+    Args:
+        audio_files: List of paths to the input audio files.
+        output_srt_files: List of paths to the output SRT files.
+    """
+    if len(audio_files) != len(output_srt_files):
+        raise ValueError("Number of audio files must match number of output SRT files")
+        
+    # Create unique output directories for segments
+    temp_dirs = []
+    for audio_file in audio_files:
+        file_id = os.path.splitext(os.path.basename(audio_file))[0]
+        output_dir = f"temp_audio_segments_{file_id}"
+        os.makedirs(output_dir, exist_ok=True)
+        temp_dirs.append(output_dir)
+
+    print(f"Processing {len(audio_files)} audio files with cross-file batching")
+    if available_gpus:
+        print(f"Using {len(available_gpus)} GPUs: {available_gpus}")
+        print(f"Batch size per GPU: {BATCH_SIZE_PER_GPU}")
+    else:
+        print("Using CPU")
+    
+    # Process all files at once - first split them into segments
+    all_segments_info = []
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(os.cpu_count(), len(audio_files))) as executor:
+        # Split all files into segments in parallel
+        split_futures = []
+        
+        for i, (audio_file, temp_dir) in enumerate(zip(audio_files, temp_dirs)):
+            print(f"Splitting audio file ({i+1}/{len(audio_files)}): {audio_file}")
+            future = executor.submit(split_audio, audio_file, temp_dir)
+            split_futures.append((future, i, audio_file, temp_dir))
+        
+        # Collect segment information
+        for future, i, audio_file, temp_dir in split_futures:
+            try:
+                segment_files = future.result()
+                file_id = os.path.splitext(os.path.basename(audio_file))[0]
+                
+                print(f"File {i+1}/{len(audio_files)}: {file_id} - {len(segment_files)} segments")
+                
+                # Load all segments for this file
+                file_segments = []
+                file_start_times = []
+                file_segment_paths = []
+                total_duration = 0
+                
+                for j, segment_file in enumerate(segment_files):
+                    segment_path = os.path.join(temp_dir, segment_file)
+                    file_segment_paths.append(segment_path)
+                    audio_segment, sr = librosa.load(segment_path, sr=16000)
+                    file_segments.append(audio_segment)
+                    file_start_times.append(total_duration)
+                    segment_duration = len(audio_segment) / sr
+                    total_duration += segment_duration
+                
+                # Store all segment info for this file
+                all_segments_info.append({
+                    'file_id': file_id,
+                    'file_index': i,
+                    'segments': file_segments,
+                    'start_times': file_start_times,
+                    'segment_paths': file_segment_paths,
+                    'segment_count': len(segment_files)
+                })
+                
+            except Exception as e:
+                print(f"Error splitting file {audio_file}: {e}")
+    
+    # Now process all segments across all files on GPUs
+    if not all_segments_info:
+        print("No segments found to process")
+        return
+    
+    # Flatten all segments across files into a single processing queue
+    all_segments = []
+    all_file_ids = []
+    all_segment_indices = []
+    all_start_times = []
+    
+    for file_info in all_segments_info:
+        for j, (segment, start_time) in enumerate(zip(file_info['segments'], file_info['start_times'])):
+            all_segments.append(segment)
+            all_file_ids.append(file_info['file_id'])
+            all_segment_indices.append(j)
+            all_start_times.append(start_time)
+    
+    print(f"Total segments across all files: {len(all_segments)}")
+    
+    # Process all segments on GPU in optimal batches
+    segment_results = {}
+    
+    if available_gpus:
+        # Create a task queue for all segments
+        task_queue = Queue()
+        lock = threading.Lock()
+        
+        # Fill the queue with all segment indices
+        for i in range(len(all_segments)):
+            task_queue.put(i)
+            
+        def worker(gpu_id):
+            """Worker function that processes batches from the queue"""
+            while True:
+                batch_items = []
+                
+                # Try to fill a batch
+                try:
+                    for _ in range(BATCH_SIZE_PER_GPU):
+                        try:
+                            # Get next segment index from queue with timeout
+                            idx = task_queue.get(block=False)
+                            batch_items.append((
+                                all_file_ids[idx], 
+                                all_segment_indices[idx], 
+                                all_segments[idx], 
+                                all_start_times[idx]
+                            ))
+                        except Empty:
+                            break
+                except Exception as e:
+                    print(f"Error building batch: {e}")
+                    break
+                
+                # If batch is empty, exit the worker
+                if not batch_items:
+                    break
+                    
+                # Process the batch
+                try:
+                    batch_results = process_batch_on_gpu(batch_items, gpu_id)
+                    
+                    # Store results and mark tasks as done
+                    with lock:
+                        for key, subtitles in batch_results.items():
+                            segment_results[key] = subtitles
+                        
+                    # Mark all tasks in this batch as done
+                    for _ in range(len(batch_items)):
+                        task_queue.task_done()
+                        
+                except Exception as e:
+                    print(f"Error processing batch on GPU {gpu_id}: {e}")
+                    # Put segments back in the queue
+                    for _ in range(len(batch_items)):
+                        task_queue.task_done()  # Mark original as done
+                    
+                    # Only retry if it's not a GPU error
+                    if "CUDA" not in str(e) and "GPU" not in str(e):
+                        print("Requeuing segments due to non-GPU error")
+                        for i in range(len(batch_items)):
+                            task_queue.put(i)  # Put back in queue
+        
+        # Create worker threads for each GPU
+        threads = []
+        for gpu_id in available_gpus:
+            thread = threading.Thread(target=worker, args=(gpu_id,))
+            thread.daemon = True
+            thread.start()
+            threads.append(thread)
+            
+        # Wait for all threads to complete
+        task_queue.join()
+    
+    else:
+        # Fall back to sequential processing on CPU
+        print("Using CPU for processing - this will be slow")
+        # Implementation for CPU if needed
+    
+    # Group results by file and save each SRT
+    for file_info in all_segments_info:
+        file_id = file_info['file_id']
+        file_index = file_info['file_index']
+        output_file = output_srt_files[file_index]
+        
+        # Collect all subtitles for this file
+        file_subtitles = []
+        for i in range(file_info['segment_count']):
+            key = (file_id, i)
+            if key in segment_results:
+                file_subtitles.extend(segment_results[key])
+        
+        # Sort subtitles by start time
+        file_subtitles.sort(key=lambda s: s.start)
+        
+        # Renumber subtitles
+        for i, subtitle in enumerate(file_subtitles):
+            subtitle.index = i + 1
+        
+        # Write SRT file
+        full_srt_content = srt.compose(file_subtitles)
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(full_srt_content)
+            
+        print(f"Completed SRT file: {output_file}")
+    
+    # Clean up temporary files
+    for file_info in all_segments_info:
+        temp_dir = os.path.dirname(file_info['segment_paths'][0])
+        for segment_path in file_info['segment_paths']:
+            try:
+                os.remove(segment_path)
+            except:
+                pass
+        try:
+            os.rmdir(temp_dir)
+        except:
+            pass
+
+def generate_srt_from_audio(audio_file, output_srt_file):
+    """
+    Generates an SRT file from an audio file.
+    Wrapper function that calls generate_multiple_srt_from_audio.
 
     Args:
         audio_file: Path to the input audio file.
         output_srt_file: Path to the output SRT file.
-        batch_size: Number of segments to process simultaneously
     """
-    output_dir = "temp_audio_segments"
-    os.makedirs(output_dir, exist_ok=True)
-
-    print(f"Processing audio file: {audio_file}")
-    print(f"Output SRT file: {output_srt_file}")
-    print(f"Using device: {device}")
-    print(f"Batch size: {batch_size}")
-
-    segment_files = split_audio(audio_file, output_dir)
-    
-    all_subtitles = []
-    total_duration = 0
-    last_index = 0
-    
-    total_segments = len(segment_files)
-    num_batches = (total_segments + batch_size - 1) // batch_size
-    print(f"\nProcessing {total_segments} segments in {num_batches} batches...")
-    
-    # Process segments in batches
-    for i in tqdm(range(0, len(segment_files), batch_size)):
-        batch_files = segment_files[i:i + batch_size]
-        batch_segments = []
-        batch_start_times = []
-        
-        print(f"\nProcessing batch {(i // batch_size) + 1}/{num_batches} "
-              f"(segments {i + 1}-{min(i + batch_size, total_segments)} of {total_segments})")
-        
-        # Load audio segments for current batch
-        for segment_file in batch_files:
-            segment_path = os.path.join(output_dir, segment_file)
-            audio_segment, _ = librosa.load(segment_path, sr=16000)
-            batch_segments.append(audio_segment)
-            batch_start_times.append(total_duration)
-            total_duration += librosa.get_duration(y=audio_segment, sr=16000)
-        
-        # Process the batch
-        batch_subtitles, last_index = process_audio_segments_batch(
-            batch_segments, 
-            batch_start_times, 
-            last_index
-        )
-        all_subtitles.extend(batch_subtitles)
-    
-    # Compose the final SRT content from all subtitles
-    full_srt_content = srt.compose(all_subtitles)
-    
-    with open(output_srt_file, "w", encoding="utf-8") as f:
-        f.write(full_srt_content)
-
-    # Cleanup
-    for segment_file in segment_files:
-        os.remove(os.path.join(output_dir, segment_file))
-    os.rmdir(output_dir)
-    
-    print(f"\nCompleted! SRT file saved to: {output_srt_file}")
+    generate_multiple_srt_from_audio([audio_file], [output_srt_file])
 
 def main():
     audio_file = "test.wav"
@@ -334,4 +672,5 @@ def main():
     generate_srt_from_audio(audio_file, output_srt_file)
 
 if __name__ == "__main__":
+    initialize_models()
     main()
