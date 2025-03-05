@@ -248,6 +248,69 @@ def download_audio(link, output_path, start_time=None, end_time=None, quiet=Fals
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
+    # First download the complete file if time ranges are specified for better performance
+    if start_time or end_time:
+        temp_output = f"{output_path}_full"
+        
+        # First download the full file
+        full_ydl_opts = {
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+            }],
+            'outtmpl': temp_output,  # Extension will be added automatically
+        }
+        
+        # Add quiet options when in quiet mode
+        if quiet:
+            full_ydl_opts.update({
+                'quiet': True,
+                'no_warnings': True,
+                'no_color': True
+            })
+            
+        try:
+            with yt_dlp.YoutubeDL(full_ydl_opts) as ydl:
+                ydl.download([link])
+                
+            # Now use FFmpeg directly to extract the portion you want
+            import subprocess
+            
+            ffmpeg_cmd = ['ffmpeg', '-y']
+            
+            # Add input file
+            ffmpeg_cmd.extend(['-i', f"{temp_output}.mp3"])
+            
+            # Add start time if specified
+            if start_time:
+                ffmpeg_cmd.extend(['-ss', start_time])
+                
+            # Add end time if specified
+            if end_time:
+                ffmpeg_cmd.extend(['-to', end_time])
+                
+            # Add output file and options
+            ffmpeg_cmd.extend(['-acodec', 'copy', f"{output_path}.mp3"])
+            
+            # Run the command
+            if not quiet:
+                print(f"Extracting segment from {start_time or '0:00'} to {end_time or 'end'}...")
+                
+            subprocess.run(ffmpeg_cmd, check=True, capture_output=quiet)
+            
+            # Remove the temporary full file
+            os.remove(f"{temp_output}.mp3")
+            
+            return True
+            
+        except Exception as e:
+            if not quiet:
+                print(f"Error processing time range: {str(e)}")
+                print("Falling back to standard download...")
+            # If the two-step process fails, fall back to the original method
+            
+    # Standard download without time range or if two-step process failed
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{
@@ -265,15 +328,32 @@ def download_audio(link, output_path, start_time=None, end_time=None, quiet=Fals
             'no_color': True
         })
 
-    # Add download range if times are specified
+    # Add download range if times are specified (only as fallback)
     if start_time or end_time:
-        download_range = ''
+        # Convert time strings to seconds
+        start_seconds = 0
+        end_seconds = float('inf')
+        
         if start_time:
-            download_range += start_time
-        download_range += '-'
+            # Handle MM:SS or HH:MM:SS format
+            parts = start_time.split(':')
+            if len(parts) == 2:  # MM:SS format
+                start_seconds = int(parts[0]) * 60 + int(parts[1])
+            elif len(parts) == 3:  # HH:MM:SS format
+                start_seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        
         if end_time:
-            download_range += end_time
-        ydl_opts['download_ranges'] = lambda info: [[download_range]]
+            # Handle MM:SS or HH:MM:SS format
+            parts = end_time.split(':')
+            if len(parts) == 2:  # MM:SS format
+                end_seconds = int(parts[0]) * 60 + int(parts[1])
+            elif len(parts) == 3:  # HH:MM:SS format
+                end_seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        
+        # Define a lambda that returns a list of dictionaries with start_time and end_time keys
+        ydl_opts['download_ranges'] = lambda info_dict, ydl: [
+            {'start_time': start_seconds, 'end_time': end_seconds}
+        ]
         
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([link])
