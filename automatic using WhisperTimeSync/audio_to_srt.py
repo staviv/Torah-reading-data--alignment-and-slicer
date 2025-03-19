@@ -52,7 +52,7 @@ def initialize_models():
         return
     
     # Initialize models on all GPUs in advance
-    model_name = "openai/whisper-large-v2"
+    model_name = "ivrit-ai/whisper-large-v3"
     processor = WhisperProcessor.from_pretrained(model_name)
     
     print(f"Initializing models on {len(available_gpus)} GPUs...")
