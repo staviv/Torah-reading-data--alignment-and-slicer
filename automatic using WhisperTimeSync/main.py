@@ -1,13 +1,12 @@
 import os
 import threading
 import concurrent.futures
-from audio_to_srt import generate_multiple_srt_from_audio, initialize_models
+from audio_to_srt import multiple_generate_srt_from_audio, initialize_models
 from create_steps_files import create_steps_files, remove_steps_files
 import subprocess
 
 # Define the directory containing the audio files
-# audio_dir = "/home/prj8045/data/Nusach-Sephardic-Yerushalmi-Avi-Zarki/"
-audio_dir = "/home/prj8045/train_data/sefaradi-yerushalmi-yuval-avidani/"
+audio_dir = "/home/prj8045/train_data/Maroco-Michael-Bitton/"
 text_dir = "/home/prj8045/train_data/text/"
 
 whisperTimeSync = "/home/prj8045/Torah-reading-data--alignment-and-slicer/automatic using WhisperTimeSync/WhisperTimeSync/distrib/WhisperTimeSync.jar"
@@ -82,7 +81,7 @@ def main():
     
     # Process all files in a single batch for segment-level optimization
     print(f"Generating transcriptions for all {total_files} files together")
-    generate_multiple_srt_from_audio(audio_paths, raw_srt_paths)
+    multiple_generate_srt_from_audio(audio_paths, raw_srt_paths)
     
     # Now that we have all the raw SRTs, process text alignment for each file in parallel
     print(f"Starting text alignment for all files")

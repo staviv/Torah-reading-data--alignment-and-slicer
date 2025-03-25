@@ -15,12 +15,12 @@ import threading
 from queue import Queue, Empty
 
 # Constants
-MAX_SEGMENT_LENGTH = 30000  # 30 seconds in milliseconds
+MAX_SEGMENT_LENGTH = 30000  # 20 seconds in milliseconds
 MIN_SEGMENT_LENGTH = 1000   # 1 second in milliseconds
-MAX_SEGMENT_LENGTH_CHARS = 9999 
-WITH_TIMESTAMPS = False # Set to False, True (the worst option), or "word" to get timestamps for each word
+MAX_SEGMENT_LENGTH_CHARS = 170 
+WITH_TIMESTAMPS = "word" # Set to False, True (the worst option), or "word" to get timestamps for each word
 MIN_GPU_MEMORY = 23000  # 23GB in MB
-BATCH_SIZE_PER_GPU = 16  # Number of segments to process in a single batch on each GPU
+BATCH_SIZE_PER_GPU = 2  # Number of segments to process in a single batch on each GPU
 
 # Parent directory for all temporary files
 TEMP_PARENT_DIR = "temp"
@@ -443,7 +443,7 @@ def process_batch_on_gpu(batch_items, gpu_id):
     # print(f"GPU {gpu_id} completed batch of {batch_size} segments: {segment_ids}")
     return batch_results
 
-def generate_multiple_srt_from_audio(audio_files, output_srt_files):
+def multiple_generate_srt_from_audio(audio_files, output_srt_files):
     """
     Generates multiple SRT files from audio files, processing segments across all files
     optimally on multiple GPUs.
@@ -676,14 +676,14 @@ def generate_srt_from_audio(audio_file, output_srt_file):
         audio_file: Path to the input audio file.
         output_srt_file: Path to the output SRT file.
     """
-    generate_multiple_srt_from_audio([audio_file], [output_srt_file])
+    multiple_generate_srt_from_audio([audio_file], [output_srt_file])
 
 def main():
     # Ensure the parent temp directory exists
     os.makedirs(TEMP_PARENT_DIR, exist_ok=True)
     
-    audio_file = "test.wav"
-    output_srt_file = "output.srt"
+    audio_file = "AchreiMot-1.mp3"
+    output_srt_file = "AchreiMot-1.srt"
     generate_srt_from_audio(audio_file, output_srt_file)
 
 if __name__ == "__main__":
