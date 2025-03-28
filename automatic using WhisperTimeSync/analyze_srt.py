@@ -29,6 +29,16 @@ def count_non_nikud_chars(text):
     # Return the length of the remaining text
     return len(text)
 
+def get_raw_srt_path(processed_path):
+    """Convert a processed SRT path to its corresponding RAW SRT path"""
+    # Replace base directory
+    if "/train_data/" in processed_path:
+        raw_path = processed_path.replace("/train_data/", "/train_data_RAW_SRT/")
+        # Insert _RAW before the .srt extension
+        raw_path = raw_path.replace(".srt", "_RAW.srt")
+        return raw_path
+    return None
+
 def load_srt_file(srt_path):
     """
     Load subtitles from an SRT file.
@@ -283,7 +293,7 @@ def main():
     parser.add_argument('--analysis', type=str, default='longest', 
                         choices=['all', 'longest', 'duration', 'wpm', 'common_words', 'stats'],
                         help='Type of analysis to perform')
-    parser.add_argument('--top', type=int, default=10, help='Number of top results to show')
+    parser.add_argument('--top', type=int, default=None, help='Number of top results to show')
     parser.add_argument('--recursive', action='store_true', help='Search for SRT files recursively in subdirectories')
     parser.add_argument('--show-content', action='store_true', help='Show subtitle content in results')
     parser.add_argument('--length-threshold', type=int, help='Report files with subtitles longer than this threshold')
@@ -297,7 +307,8 @@ def main():
     
     srt_directory = args.dir
     analysis_type = args.analysis
-    top_n = args.top
+    top_n = args.top if args.top is not None else 10  # Default to 10 if not provided
+    top_n_provided = args.top is not None  # Track if --top was explicitly provided
     recursive = args.recursive
     show_content = args.show_content
     length_threshold = args.length_threshold
@@ -355,14 +366,17 @@ def main():
         min_length_threshold=min_length_threshold
     )
     
-    # Display analysis results
-    if analysis_type == 'all' or analysis_type == 'longest':
+    # Display analysis results - only if --top was explicitly provided
+    if top_n_provided and (analysis_type == 'all' or analysis_type == 'longest'):
         if results:
             print(f"\nTop {top_n} Longest Subtitles (by non-nikud character count):")
             print("=" * 80)
             
             for i, result in enumerate(results):
-                print(f"{i+1}. File: {result['relative_path']}")
+                print(f"{i+1}. File: {result['file_path']}")
+                raw_path = get_raw_srt_path(result['file_path'])
+                if raw_path and os.path.exists(raw_path):
+                    print(f"   RAW file: {raw_path}")
                 print(f"   Index: {result['index']}")
                 print(f"   Length: {result['length']} non-nikud chars, Duration: {result['duration'].total_seconds():.2f}s")
                 print(f"   Time: {result['start']} --> {result['end']}")
@@ -370,7 +384,7 @@ def main():
                     print(f"   Content: {result['content']}")
                 print("-" * 80)
 
-    if analysis_type == 'all' or analysis_type == 'duration':
+    if top_n_provided and (analysis_type == 'all' or analysis_type == 'duration'):
         # Need to perform this analysis separately for 'all' mode
         if analysis_type == 'all':
             results, _, _, _, _, _ = analyze_srt_files(
@@ -387,7 +401,10 @@ def main():
             print("=" * 80)
             
             for i, result in enumerate(results):
-                print(f"{i+1}. File: {result['relative_path']}")
+                print(f"{i+1}. File: {result['file_path']}")
+                raw_path = get_raw_srt_path(result['file_path'])
+                if raw_path and os.path.exists(raw_path):
+                    print(f"   RAW file: {raw_path}")
                 print(f"   Index: {result['index']}")
                 print(f"   Duration: {result['duration'].total_seconds():.2f}s, Length: {result['length']} non-nikud chars")
                 print(f"   Time: {result['start']} --> {result['end']}")
@@ -395,7 +412,7 @@ def main():
                     print(f"   Content: {result['content']}")
                 print("-" * 80)
 
-    if analysis_type == 'all' or analysis_type == 'wpm':
+    if top_n_provided and (analysis_type == 'all' or analysis_type == 'wpm'):
         # Need to perform this analysis separately for 'all' mode
         if analysis_type == 'all':
             results, _, _, _, _, _ = analyze_srt_files(
@@ -412,7 +429,10 @@ def main():
             print("=" * 80)
             
             for i, result in enumerate(results):
-                print(f"{i+1}. File: {result['relative_path']}")
+                print(f"{i+1}. File: {result['file_path']}")
+                raw_path = get_raw_srt_path(result['file_path'])
+                if raw_path and os.path.exists(raw_path):
+                    print(f"   RAW file: {raw_path}")
                 print(f"   Index: {result['index']}")
                 print(f"   WPM: {result['wpm']:.2f}, Words: {result['word_count']}, Duration: {result['duration'].total_seconds():.2f}s")
                 print(f"   Time: {result['start']} --> {result['end']}")
@@ -420,7 +440,7 @@ def main():
                     print(f"   Content: {result['content']}")
                 print("-" * 80)
 
-    if analysis_type == 'all' or analysis_type == 'common_words':
+    if top_n_provided and (analysis_type == 'all' or analysis_type == 'common_words'):
         # Need to perform this analysis separately for 'all' mode
         if analysis_type == 'all':
             results, _, _, _, _, _ = analyze_srt_files(
@@ -476,7 +496,10 @@ def main():
         print("\nFiles with parsing errors:")
         print("=" * 80)
         for i, error_file in enumerate(error_files):
-            print(f"{i+1}. {error_file['relative_path']}")
+            print(f"{i+1}. {error_file['file_path']}")
+            raw_path = get_raw_srt_path(error_file['file_path'])
+            if raw_path and os.path.exists(raw_path):
+                print(f"   RAW file: {raw_path}")
             print(f"   Error: {error_file['error']}")
             print("-" * 80)
     
@@ -485,7 +508,10 @@ def main():
         print(f"\nFiles with subtitles longer than {length_threshold} non-nikud characters:")
         print("=" * 80)
         for i, long_file in enumerate(long_files):
-            print(f"{i+1}. {long_file['relative_path']}")
+            print(f"{i+1}. {long_file['file_path']}")
+            raw_path = get_raw_srt_path(long_file['file_path'])
+            if raw_path and os.path.exists(raw_path):
+                print(f"   RAW file: {raw_path}")
         print(f"\nTotal: {len(long_files)} files with long subtitles")
     
     # Display short subtitles if requested
@@ -493,7 +519,10 @@ def main():
         print(f"\nSubtitles with {min_length_threshold} or fewer non-nikud characters:")
         print("=" * 80)
         for i, short in enumerate(short_subtitles):
-            print(f"{i+1}. File: {short['relative_path']}")
+            print(f"{i+1}. File: {short['file_path']}")
+            raw_path = get_raw_srt_path(short['file_path'])
+            if raw_path and os.path.exists(raw_path):
+                print(f"   RAW file: {raw_path}")
             print(f"   Index: {short['index']}")
             print(f"   Length: {short['length']} non-nikud chars")
             print(f"   Time: {short['start']} --> {short['end']}")
@@ -507,8 +536,10 @@ def main():
         if remove_short and files_with_short_subtitles:
             print("\nFound files with short subtitles that can be removed:")
             for i, (file_path, indices) in enumerate(files_with_short_subtitles.items()):
-                rel_path = os.path.relpath(file_path, srt_directory)
-                print(f"{i+1}. {rel_path} - {len(indices)} subtitle(s) to remove")
+                print(f"{i+1}. {file_path} - {len(indices)} subtitle(s) to remove")
+                raw_path = get_raw_srt_path(file_path)
+                if raw_path and os.path.exists(raw_path):
+                    print(f"   RAW file: {raw_path}")
             
             # Ask for confirmation
             confirmation = input("\nDo you want to remove these short subtitles? (yes/no): ").strip().lower()
@@ -519,14 +550,13 @@ def main():
                 error_count = 0
                 
                 for file_path, indices in files_with_short_subtitles.items():
-                    rel_path = os.path.relpath(file_path, srt_directory)
                     success, message = remove_short_subtitles(file_path, indices)
                     
                     if success:
-                        print(f"✓ {rel_path}: Removed {len(indices)} subtitle(s)")
+                        print(f"✓ {file_path}: Removed {len(indices)} subtitle(s)")
                         success_count += 1
                     else:
-                        print(f"✗ {rel_path}: {message}")
+                        print(f"✗ {file_path}: {message}")
                         error_count += 1
                 
                 print(f"\nRemoval completed: {success_count} files updated, {error_count} errors")

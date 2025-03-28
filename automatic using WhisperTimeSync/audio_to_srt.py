@@ -20,7 +20,7 @@ MIN_SEGMENT_LENGTH = 1000   # 1 second in milliseconds
 MAX_SEGMENT_LENGTH_CHARS = 170 
 WITH_TIMESTAMPS = "word" # Set to False, True (the worst option), or "word" to get timestamps for each word
 MIN_GPU_MEMORY = 23000  # 23GB in MB
-BATCH_SIZE_PER_GPU = 2  # Number of segments to process in a single batch on each GPU
+BATCH_SIZE_PER_GPU = 1  # Number of segments to process in a single batch on each GPU
 
 # Parent directory for all temporary files
 TEMP_PARENT_DIR = "temp"
@@ -160,13 +160,13 @@ def split_audio(audio_file, output_dir):
     Returns:
         A list of file names for the created audio segments.
     """
-    ENERGY_THRESHOLD = 0.005
+    # ENERGY_THRESHOLD = 0.005
     FRAME_LENGTH = 20  # in milliseconds
     vad = EnergyVAD(
         sample_rate=16000,
         frame_length=FRAME_LENGTH,
         frame_shift=FRAME_LENGTH,
-        energy_threshold=ENERGY_THRESHOLD,
+        # energy_threshold=ENERGY_THRESHOLD, # if we not choose threshold, It will be calculated automatically
         pre_emphasis=0.95,
     )
 
@@ -203,6 +203,7 @@ def split_audio(audio_file, output_dir):
             end = max_frames
             forced_splits.append(len(segments))
             print(f"Warning: Forced to split at maximum length near {(start * FRAME_LENGTH) / 1000:.2f} seconds")
+            
 
         # Use original audio for saving segments
         segment = audio[start * FRAME_LENGTH * sr // 1000:end * FRAME_LENGTH * sr // 1000]
@@ -246,15 +247,7 @@ def split_audio(audio_file, output_dir):
 def create_srt_segment(result, start_time=0, last_index=0, segment_duration=None):
     """
     Creates a list of Subtitle objects from the Whisper result.
-
-    Args:
-        result: The output from the Whisper pipeline.
-        start_time: The starting time (in seconds) for this segment within the full audio.
-        last_index: The last subtitle index from the previous segment.
-        segment_duration: The duration of the audio segment in seconds.
-
-    Returns:
-        A list of Subtitle objects and the last index used.
+    Filters out "תודה רבה" phrases and avoids creating empty segments.
     """
     subtitles = []
     current_line = ""
@@ -262,42 +255,55 @@ def create_srt_segment(result, start_time=0, last_index=0, segment_duration=None
     current_index = last_index + 1
 
     for i, segment in enumerate(result["chunks"]):
+        # Filter out "תודה רבה" from the text
         word = segment["text"].strip()
+        word = word.replace("תודה רבה.", "").replace("תודה רבה", "").strip()
+        
+        # Skip entirely empty segments after filtering
+        if not word:
+            continue
+            
         if segment_start_time is None:
             segment_start_time = segment["timestamp"][0]
 
         if len(current_line + word) > MAX_SEGMENT_LENGTH_CHARS:
-            # Improved handling of timestamp values
-            end_time = segment["timestamp"][0] + start_time
-            subtitles.append(srt.Subtitle(index=current_index,
-                                          start=timedelta(seconds=segment_start_time + start_time),
-                                          end=timedelta(seconds=end_time),
-                                          content=current_line.strip()))
-            current_index += 1
+            # Filter the current line and check if it's not empty
+            filtered_line = current_line.replace("תודה רבה.", "").replace("תודה רבה", "").strip()
+            
+            if filtered_line:  # Only add non-empty subtitles
+                end_time = segment["timestamp"][0] + start_time
+                subtitles.append(srt.Subtitle(index=current_index,
+                                            start=timedelta(seconds=segment_start_time + start_time),
+                                            end=timedelta(seconds=end_time),
+                                            content=filtered_line))
+                current_index += 1
+                
             current_line = word + " "
             segment_start_time = segment["timestamp"][0]
         else:
             current_line += word + " "
 
-    # Add the last subtitle if there's remaining content
+    # Add the last subtitle if there's remaining content after filtering
     if current_line:
-        last_timestamp = result["chunks"][-1]["timestamp"]
-        # Improved handling of timestamp values - handle None values
-        end_time_value = last_timestamp[1] if last_timestamp[1] is not None else last_timestamp[0]
+        filtered_line = current_line.replace("תודה רבה.", "").replace("תודה רבה", "").strip()
         
-        # Ensure the last subtitle ends at least at the end of the segment
-        if segment_duration is not None and i == len(result["chunks"]) - 1:
-            segment_end_time = start_time + segment_duration
-            if end_time_value + start_time < segment_end_time:
-                end_time_value = segment_duration  # Use segment_duration directly as we'll add start_time later
-        
-        subtitles.append(srt.Subtitle(index=current_index,
-                                      start=timedelta(seconds=segment_start_time + start_time),
-                                      end=timedelta(seconds=end_time_value + start_time),
-                                      content=current_line.strip()))
-        current_index += 1
+        if filtered_line:  # Only add if there's non-empty text after filtering
+            last_timestamp = result["chunks"][-1]["timestamp"]
+            end_time_value = last_timestamp[1] if last_timestamp[1] is not None else last_timestamp[0]
+            
+            if segment_duration is not None and i == len(result["chunks"]) - 1:
+                segment_end_time = start_time + segment_duration
+                if end_time_value + start_time < segment_end_time:
+                    end_time_value = segment_duration
+            
+            subtitles.append(srt.Subtitle(index=current_index,
+                                        start=timedelta(seconds=segment_start_time + start_time),
+                                        end=timedelta(seconds=end_time_value + start_time),
+                                        content=filtered_line))
+            current_index += 1
 
     return subtitles, current_index - 1
+
 
 def process_audio_segment(audio_segment, start_time=0, last_index=0):
     """
