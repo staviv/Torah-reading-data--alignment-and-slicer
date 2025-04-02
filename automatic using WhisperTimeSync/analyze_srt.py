@@ -286,6 +286,39 @@ def remove_short_subtitles(file_path, indices_to_remove):
     except Exception as e:
         return False, f"Error removing subtitles: {str(e)}"
 
+def remove_files(file_paths):
+    """
+    Remove SRT files and their corresponding RAW files.
+    
+    Args:
+        file_paths: List of file paths to remove
+    
+    Returns:
+        Tuple of (removed_count, errors_dict) where removed_count is the number of files successfully removed
+        and errors_dict maps file paths to error messages
+    """
+    removed_count = 0
+    errors = {}
+    
+    for file_path in file_paths:
+        try:
+            # Get the RAW path before removing the file
+            raw_path = get_raw_srt_path(file_path)
+            
+            # Remove the SRT file
+            os.remove(file_path)
+            removed_count += 1
+            
+            # Try to remove the corresponding RAW file
+            if raw_path and os.path.exists(raw_path):
+                os.remove(raw_path)
+                removed_count += 1
+                
+        except Exception as e:
+            errors[file_path] = str(e)
+    
+    return removed_count, errors
+
 def main():
     parser = argparse.ArgumentParser(description='Analyze SRT subtitle files')
     parser.add_argument('--dir', type=str, default="/home/prj8045/train_data/Maroco-Michael-Bitton/", 
@@ -302,6 +335,8 @@ def main():
                        help='Find subtitles with non-nikud character count <= this threshold (use 0 for empty subtitles)')
     parser.add_argument('--remove-short', action='store_true', 
                        help='Remove subtitles with few characters (specified by --min-length)')
+    parser.add_argument('--remove-long', action='store_true', 
+                       help='Remove entire files that contain subtitles longer than the threshold (specified by --length-threshold)')
     
     args = parser.parse_args()
     
@@ -315,6 +350,7 @@ def main():
     list_error_files = args.list_error_files
     min_length_threshold = args.min_length
     remove_short = args.remove_short
+    remove_long = args.remove_long
     
     # Verify directory exists
     if not os.path.exists(srt_directory):
@@ -513,6 +549,32 @@ def main():
             if raw_path and os.path.exists(raw_path):
                 print(f"   RAW file: {raw_path}")
         print(f"\nTotal: {len(long_files)} files with long subtitles")
+        
+        # If option to remove long files is enabled, ask for confirmation
+        if remove_long:
+            print("\nThe following files contain subtitles longer than the threshold and will be removed:")
+            for i, long_file in enumerate(long_files):
+                print(f"{i+1}. {long_file['file_path']}")
+                raw_path = get_raw_srt_path(long_file['file_path'])
+                if raw_path and os.path.exists(raw_path):
+                    print(f"   RAW file: {raw_path} (will also be removed)")
+            
+            # Ask for confirmation
+            confirmation = input("\nDo you want to remove these files? (yes/no): ").strip().lower()
+            if confirmation in ['yes', 'y']:
+                print("\nRemoving files with long subtitles...")
+                
+                file_paths = [file_info['file_path'] for file_info in long_files]
+                removed_count, errors = remove_files(file_paths)
+                
+                if errors:
+                    print("\nErrors occurred while removing files:")
+                    for file_path, error in errors.items():
+                        print(f"✗ {file_path}: {error}")
+                
+                print(f"\nRemoval completed: {removed_count} files removed")
+            else:
+                print("Operation cancelled. No files were removed.")
     
     # Display short subtitles if requested
     if min_length_threshold is not None and short_subtitles:

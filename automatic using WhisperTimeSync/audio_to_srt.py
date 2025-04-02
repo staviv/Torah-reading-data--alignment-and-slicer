@@ -15,7 +15,7 @@ import threading
 from queue import Queue, Empty
 
 # Constants
-MAX_SEGMENT_LENGTH = 30000  # 20 seconds in milliseconds
+MAX_SEGMENT_LENGTH = 25000  # 20 seconds in milliseconds
 MIN_SEGMENT_LENGTH = 1000   # 1 second in milliseconds
 MAX_SEGMENT_LENGTH_CHARS = 170 
 WITH_TIMESTAMPS = "word" # Set to False, True (the worst option), or "word" to get timestamps for each word
