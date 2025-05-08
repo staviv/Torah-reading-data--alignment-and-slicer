@@ -5,10 +5,11 @@ import numpy as np
 import librosa
 import scipy.signal
 import soundfile as sf
+import time  # Add time module import
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QPushButton, 
                              QVBoxLayout, QHBoxLayout, QWidget, QFileDialog, 
                              QMessageBox, QSlider, QLabel, QProgressBar, QComboBox,
-                             QLineEdit, QPlainTextEdit)
+                             QLineEdit, QPlainTextEdit, QCheckBox)
 from PyQt6.QtCore import QUrl, Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from vad import EnergyVAD
@@ -180,7 +181,7 @@ class AudioSegmentationApp(QMainWindow):
         # Playback speed control
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(["1x", "1.5x", "2x", "2.5x", "3x"])
-        self.speed_combo.setCurrentIndex(2)  # Set default to 2x
+        self.speed_combo.setCurrentIndex(0)
         self.speed_combo.currentIndexChanged.connect(self.change_playback_speed)
         playback_layout.addWidget(QLabel("Speed:"))
         playback_layout.addWidget(self.speed_combo)
@@ -268,41 +269,214 @@ class AudioSegmentationApp(QMainWindow):
             self.show_error("Error", "Please enter a YouTube link.")
             return
 
-        try:
-            safe_title = "downloaded_audio" # שם קובץ ברירת מחדל
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': '%(title)s.%(ext)s',
-                'noplaylist': True,
-                'paths': {'home': self.output_dir}, # שמור את הקובץ בתיקיית הפלט
-                'progress_hooks': [self.yt_dlp_progress_hook], # הוספת progress hook
-            }
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info_dict = ydl.extract_info(youtube_link, download=True)
-                safe_title = sanitize_filename(info_dict.get('title', "downloaded_audio"))
-
-            file_ext = info_dict.get('ext', 'webm')
-            self.audio_file = os.path.join(self.output_dir, f"{safe_title}.{file_ext}")
+        # Show progress bar
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        
+        # Get output directory first if not already set
+        if not self.output_dir:
             self.output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
             if not self.output_dir:
+                self.progress_bar.setVisible(False)
                 return
+        
+        try:
+            # Direct subprocess approach with yt-dlp
+            import subprocess
+            import tempfile
+            
+            # Create a temporary file for logging
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp_log:
+                log_file = tmp_log.name
+                
+            # Prepare the command
+            output_template = os.path.join(self.output_dir, '%(title)s.%(ext)s')
+            
+            cmd = [
+                'yt-dlp',
+                youtube_link,
+                '--extract-audio',
+                '--audio-format', 'wav',
+                '--audio-quality', '0',
+                '-o', output_template,
+                '--no-playlist',
+                '--force-overwrites',
+                '--geo-bypass',
+                '-v'  # Verbose output
+            ]
+            
+            # Show command in console for debugging
+            print("Running command:", " ".join(cmd))
+            
+            # Execute the command and capture output
+            self.progress_bar.setValue(10)
+            QApplication.processEvents()
+            
+            with open(log_file, 'w') as log:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True
+                )
+                
+                # Update progress based on output lines
+                for line in process.stdout:
+                    log.write(line)
+                    log.flush()
+                    print(line, end='')
+                    
+                    # Try to extract progress information
+                    if '[download]' in line and '%' in line:
+                        try:
+                            percent_str = line.split('%')[0].split()[-1]
+                            percentage = float(percent_str)
+                            self.progress_bar.setValue(int(percentage))
+                        except (ValueError, IndexError):
+                            pass
+                    
+                    QApplication.processEvents()
+                    
+                process.wait()
+                
+            # Check if process was successful
+            if process.returncode != 0:
+                with open(log_file, 'r') as log:
+                    error_output = log.read()
+                raise Exception(f"yt-dlp exited with error code {process.returncode}\n\nOutput:\n{error_output}")
+            
+            # Find the downloaded file
+            self.progress_bar.setValue(95)
+            QApplication.processEvents()
+            
+            # Log current directory contents for debugging
+            print(f"Files in output directory {self.output_dir}:")
+            for file in os.listdir(self.output_dir):
+                print(f" - {file} (Modified: {time.ctime(os.path.getmtime(os.path.join(self.output_dir, file)))})")
+                
+            # Try multiple approaches to find the downloaded file
+            audio_file_found = False
+            
+            # Approach 1: Look for recently modified audio files
+            downloaded_files = []
+            current_time = time.time()
+            for file in os.listdir(self.output_dir):
+                file_path = os.path.join(self.output_dir, file)
+                # Check for audio file extensions and files modified in last 5 minutes
+                if (file.endswith(('.wav', '.mp3', '.webm', '.m4a', '.opus')) and 
+                    os.path.getmtime(file_path) > (current_time - 300)):
+                    downloaded_files.append(file)
+                    
+            if downloaded_files:
+                # Sort by modification time (newest first)
+                downloaded_files.sort(key=lambda x: os.path.getmtime(os.path.join(self.output_dir, x)), reverse=True)
+                self.audio_file = os.path.join(self.output_dir, downloaded_files[0])
+                audio_file_found = True
+                print(f"Found downloaded file using recent modification time: {self.audio_file}")
+            
+            # Approach 2: If first approach failed, look at log output for filename clues
+            if not audio_file_found:
+                try:
+                    with open(log_file, 'r') as log:
+                        log_content = log.read()
+                        
+                    # Look for lines containing "[ExtractAudio] Destination:"
+                    for line in log_content.split('\n'):
+                        if "Destination:" in line:
+                            possible_file = line.split("Destination:")[-1].strip()
+                            if os.path.exists(possible_file):
+                                self.audio_file = possible_file
+                                audio_file_found = True
+                                print(f"Found downloaded file from log: {self.audio_file}")
+                                break
+                except Exception as e:
+                    print(f"Error parsing log file: {e}")
+            
+            # Approach 3: Simply take the most recently created audio file in the directory
+            if not audio_file_found:
+                all_audio_files = [f for f in os.listdir(self.output_dir) 
+                                 if f.lower().endswith(('.wav', '.mp3', '.webm', '.m4a', '.opus'))]
+                
+                if all_audio_files:
+                    all_audio_files.sort(key=lambda x: os.path.getmtime(os.path.join(self.output_dir, x)), reverse=True)
+                    self.audio_file = os.path.join(self.output_dir, all_audio_files[0])
+                    audio_file_found = True
+                    print(f"Found downloaded file using fallback method: {self.audio_file}")
+            
+            if not audio_file_found:
+                raise Exception("Could not find any audio file in the output directory. Please check if the download was successful.")
+            
+            # Show success and continue with processing
+            self.progress_bar.setValue(100)
+            QApplication.processEvents()
+            
             self.load_selected_parsha_text()
             self.segment_audio()
 
         except Exception as e:
-            print(f"Error downloading YouTube audio: {e}")
-            self.show_error("Error", f"Failed to download YouTube audio: {e}")
+            import traceback
+            error_msg = f"Failed to download YouTube audio: {str(e)}\n\n{traceback.format_exc()}"
+            self.progress_bar.setVisible(False)
+            self.show_error("Download Error", error_msg)
+            print(error_msg)
+            
+            # Try fallback method if first method failed
+            self.try_fallback_download(youtube_link)
 
-    def yt_dlp_progress_hook(self, d):
-        if d['status'] == 'downloading':
-            percent_str = re.sub(r'\x1b\[[0-9;]*[mG]', '', d['_percent_str']).strip()
-            percent_str = percent_str.replace('%', '')
-            try:
-                percentage = int(float(percent_str))
-                self.progress_bar.setValue(percentage)
-            except ValueError as e:
-                print(f"Error converting percentage string: {e}, Original string: {d['_percent_str']}")
+    def try_fallback_download(self, youtube_link):
+        """Fallback method for YouTube download using simpler options"""
+        try:
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(5)
+            QApplication.processEvents()
+            
+            # Try with simpler options
+            import subprocess
+            output_template = os.path.join(self.output_dir, 'audio_download.%(ext)s')
+            
+            cmd = [
+                'yt-dlp',
+                youtube_link,
+                '--extract-audio',
+                '--audio-format', 'mp3',  # Try mp3 instead of wav
+                '-o', output_template,
+                '--force-overwrites'
+            ]
+            
+            print("Running fallback command:", " ".join(cmd))
+            
+            process = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if process.returncode != 0:
+                raise Exception(f"Fallback download failed: {process.stderr}")
+            
+            # Check if file was downloaded
+            expected_file = os.path.join(self.output_dir, 'audio_download.mp3')
+            if os.path.exists(expected_file):
+                self.audio_file = expected_file
+                self.progress_bar.setValue(100)
+                self.load_selected_parsha_text()
+                self.segment_audio()
+                QMessageBox.information(self, "Success", "Audio downloaded successfully using fallback method.")
+            else:
+                raise Exception("Fallback download file not found")
+                
+        except Exception as e:
+            self.progress_bar.setVisible(False)
+            error_msg = f"Fallback download also failed: {str(e)}"
+            self.show_error("Download Error", error_msg)
+            
+            # Provide guidance to the user
+            QMessageBox.information(
+                self, 
+                "Manual Download Instructions", 
+                "Please try downloading the audio manually using these steps:\n\n"
+                "1. Open a command prompt\n"
+                "2. Run: yt-dlp -x --audio-format mp3 -o \"output.mp3\" " + youtube_link + "\n"
+                "3. Then load the downloaded audio file using the 'Load Audio' button."
+            )
 
     def load_audio(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open Audio File", "", "Audio Files (*.wav *.mp3 *.m4a)")
