@@ -7,8 +7,9 @@ from datetime import timedelta
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the fine-tuned model and processor
-model = WhisperForConditionalGeneration.from_pretrained("ivrit-ai/whisper-v2-pd1-e1").to(device)
-processor = WhisperProcessor.from_pretrained("openai/whisper-large-v2")
+model_name = "ivrit-ai/whisper-large-v3"
+model = WhisperForConditionalGeneration.from_pretrained(model_name).to(device)
+processor = WhisperProcessor.from_pretrained(model_name)
 
 
 
@@ -17,7 +18,7 @@ def load_audio(file_path, sample_rate=16000):
     audio, sr = librosa.load(file_path, sr=sample_rate)
     return audio
 
-audio_path = "/app/audio_files_other/audio_001.wav"
+audio_path = "/home/prj8045/train_data/Ashkenazi-pocketTorah/AchreiMot-1.mp3"
 audio = load_audio(audio_path)
 
 
@@ -27,7 +28,7 @@ from transformers import pipeline
 asr = pipeline("automatic-speech-recognition", model=model, tokenizer=processor.tokenizer, 
                feature_extractor=processor.feature_extractor, device=device)
 
-result = asr(audio, return_timestamps="word")
+result = asr(audio, return_timestamps=True)
 
 print(result)
 # Create SRT file
