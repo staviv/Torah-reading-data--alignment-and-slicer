@@ -59,6 +59,7 @@ Training modern ASR models like Whisper requires short audio clips (typically un
 
 Our solution is an end-to-end pipeline that automates the entire data preparation process. The architecture is as follows:
 
+
 ```mermaid
 graph TD
     subgraph "Input"
@@ -76,7 +77,7 @@ graph TD
     end
 
     subgraph "Output"
-        G --> H[Final Aligned SRT (Training-Ready Dataset)];
+        G --> H["Final Aligned SRT (Training-Ready Dataset)"];
     end
 ```
 
