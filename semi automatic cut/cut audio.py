@@ -5,7 +5,7 @@ import numpy as np
 import librosa
 import scipy.signal
 import soundfile as sf
-import time  # Add time module import
+import time 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTextEdit, QPushButton, 
                              QVBoxLayout, QHBoxLayout, QWidget, QFileDialog, 
                              QMessageBox, QSlider, QLabel, QProgressBar, QComboBox,
